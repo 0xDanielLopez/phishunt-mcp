@@ -1,0 +1,10 @@
+name = "phishunt-mcp"
+main = "src/index.ts"
+compatibility_date = "2026-04-18"
+
+[[routes]]
+pattern = "mcp.phishunt.io/*"
+zone_name = "phishunt.io"
+
+[observability]
+enabled = true
