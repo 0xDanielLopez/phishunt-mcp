@@ -152,8 +152,13 @@ async function toolListBrand(args: Record<string, unknown>) {
 
 async function toolRecent(args: Record<string, unknown>) {
 	const since = String(args.since ?? "").trim();
-	if (!since || !/^\d{4}-\d{2}-\d{2}/.test(since)) {
-		throw { code: ERR.INVALID_PARAMS, message: "'since' must be ISO date (YYYY-MM-DD)" };
+	// Regex alone would accept calendar-impossible dates (e.g. "2026-02-30").
+	// Round-trip through Date so the agent gets a clear error instead of a
+	// silent "0 detections" from the backend filter.
+	if (!since || !/^\d{4}-\d{2}-\d{2}$/.test(since) ||
+		!Number.isFinite(new Date(since + "T00:00:00Z").getTime()) ||
+		new Date(since + "T00:00:00Z").toISOString().slice(0, 10) !== since) {
+		throw { code: ERR.INVALID_PARAMS, message: "'since' must be a valid ISO date (YYYY-MM-DD)" };
 	}
 	const limit = clampInt(args.limit, 1, 1000, 100);
 	const brand = args.brand ? String(args.brand).trim().toLowerCase() : "";
@@ -251,6 +256,19 @@ export default {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 
+		// CORS preflight so browser-based MCP clients can POST from another origin.
+		if (request.method === "OPTIONS") {
+			return new Response(null, {
+				status: 204,
+				headers: {
+					"Access-Control-Allow-Origin": "*",
+					"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+					"Access-Control-Allow-Headers": "Content-Type",
+					"Access-Control-Max-Age": "86400",
+				},
+			});
+		}
+
 		// GET at root: a human-readable note.
 		if (request.method === "GET") {
 			const body = {
@@ -265,7 +283,12 @@ export default {
 				source: "https://github.com/0xDanielLopez/phishunt-mcp",
 			};
 			return Response.json(body, {
-				headers: { "Cache-Control": "public, max-age=300" },
+				headers: {
+					"Cache-Control": "public, max-age=300",
+					"Access-Control-Allow-Origin": "*",
+					"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+					"Access-Control-Allow-Headers": "Content-Type",
+				},
 			});
 		}
 
