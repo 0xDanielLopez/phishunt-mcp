@@ -188,7 +188,17 @@ function clampInt(v: unknown, min: number, max: number, dflt: number): number {
 
 // ── JSON-RPC dispatcher ────────────────────────────────────────────────────
 async function handleRpc(req: RpcRequest): Promise<RpcResponse> {
-	const id = req.id ?? null;
+	const id = req?.id ?? null;
+
+	// JSON-RPC 2.0: a Request object MUST have method as a string.
+	// Missing/non-string method → -32600 Invalid Request, not -32601.
+	if (!req || typeof req !== "object" || typeof req.method !== "string") {
+		return {
+			jsonrpc: "2.0",
+			id,
+			error: { code: ERR.INVALID_REQUEST, message: "Invalid Request: 'method' must be a string" },
+		};
+	}
 
 	try {
 		if (req.method === "initialize") {

@@ -165,6 +165,16 @@ await test("unknown RPC method returns METHOD_NOT_FOUND", async () => {
 	assert(r.body.error?.code === -32601, `expected -32601, got ${r.body.error?.code}`);
 });
 
+await test("missing method field returns INVALID_REQUEST (-32600)", async () => {
+	const r = await fetch(URL_ENDPOINT, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ jsonrpc: "2.0", id: 1, foo: "bar" }),
+	});
+	const j = await r.json();
+	assert(j.error?.code === -32600, `expected -32600, got ${j.error?.code}`);
+});
+
 await test("malformed JSON in POST returns parse error HTTP 400", async () => {
 	const r = await fetch(URL_ENDPOINT, {
 		method: "POST",
