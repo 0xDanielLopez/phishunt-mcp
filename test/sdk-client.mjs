@@ -57,14 +57,20 @@ await test("server advertises tools capability", async () => {
 console.log("\n## Tool invocation via SDK");
 
 let tools;
-await test("client.listTools() returns 3 tools", async () => {
+await test("client.listTools() returns 6 tools", async () => {
 	const r = await client.listTools();
 	tools = r.tools;
-	assert(tools.length === 3, `expected 3, got ${tools.length}`);
+	assert(tools.length === 6, `expected 6, got ${tools.length}`);
 	const names = tools.map((t) => t.name).sort();
 	assert(
-		JSON.stringify(names) ===
-			JSON.stringify(["check_domain", "get_recent_detections", "list_brand_phishings"]),
+		JSON.stringify(names) === JSON.stringify([
+			"check_domain",
+			"get_brand_metadata",
+			"get_cert_metadata",
+			"get_recent_detections",
+			"list_brand_phishings",
+			"search_phishings",
+		]),
 		`wrong tool names: ${names.join(", ")}`,
 	);
 });
@@ -97,6 +103,36 @@ await test("client.callTool('get_recent_detections') with yesterday returns cont
 	});
 	assert(Array.isArray(r.content), "content is not array");
 	assert(/\d+ detection/.test(r.content[0].text), "expected detection count in text");
+});
+
+await test("client.callTool('get_brand_metadata') returns curated note", async () => {
+	const r = await client.callTool({
+		name: "get_brand_metadata",
+		arguments: { brand: "amazon" },
+	});
+	assert(Array.isArray(r.content), "content is not array");
+	const data = JSON.parse(r.content[0].text);
+	assert(data.slug === "amazon", `wrong slug: ${data.slug}`);
+	assert(typeof data.notes === "string", "notes missing");
+});
+
+await test("client.callTool('get_cert_metadata') returns operator info", async () => {
+	const r = await client.callTool({
+		name: "get_cert_metadata",
+		arguments: { cert: "WE1" },
+	});
+	const data = JSON.parse(r.content[0].text);
+	assert(data.cert === "WE1", `wrong cert: ${data.cert}`);
+	assert(data.operator?.includes("Google"), `wrong operator: ${data.operator}`);
+});
+
+await test("client.callTool('search_phishings') with valid query returns content", async () => {
+	const r = await client.callTool({
+		name: "search_phishings",
+		arguments: { query: "instagram", limit: 3 },
+	});
+	assert(Array.isArray(r.content), "content is not array");
+	assert(r.content[0].text.length > 10, "empty content");
 });
 
 // ── Error cases via SDK ────────────────────────────────────────────────────

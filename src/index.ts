@@ -97,6 +97,58 @@ const TOOLS = [
 			required: ["since"],
 		},
 	},
+	{
+		name: "get_brand_metadata",
+		description:
+			"Fetch curated metadata for a tracked brand: display name, category, primary domain, an AI-authored characterisation of why the brand tends to be targeted by phishing, and the current count of active phishings. Useful for adding context to brand-specific responses.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				brand: {
+					type: "string",
+					description:
+						"Brand slug (lowercase). Examples: 'amazon', 'binance', 'paypal', 'microsoft'. See https://phishunt.io/api/ for the full list.",
+				},
+			},
+			required: ["brand"],
+		},
+	},
+	{
+		name: "get_cert_metadata",
+		description:
+			"Fetch factual metadata for a TLS intermediate CA seen on phishing sites: operator, root CA, key type (RSA/ECDSA), typical use case, related sibling intermediates, and the count of active phishings using this intermediate. Helps answer 'I saw cert X in my browser, what is it?' for the most-abused intermediates.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				cert: {
+					type: "string",
+					description:
+						"Intermediate CA common name as stored by phishunt (e.g. 'WE1', 'R10', 'GTS CA 1C3'). Case-sensitive exact match. See https://phishunt.io/cert/ for the list.",
+				},
+			},
+			required: ["cert"],
+		},
+	},
+	{
+		name: "search_phishings",
+		description:
+			"Free-text search across active phishing URLs, domains, and IP addresses. Returns matching detections sorted by most recent first_seen. Use for queries like 'show me sites containing steamcommunity', 'phishing on 1.2.3.4', or 'sites with ingdirect in the URL'.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				query: {
+					type: "string",
+					description: "Search string (min 3 chars). Case-insensitive substring match against URL, domain, or IP.",
+				},
+				limit: {
+					type: "number",
+					description: "Max results (1-200). Default 50.",
+					default: 50,
+				},
+			},
+			required: ["query"],
+		},
+	},
 ] as const;
 
 // ── Tool implementations ───────────────────────────────────────────────────
@@ -104,6 +156,9 @@ async function callTool(name: string, args: Record<string, unknown>) {
 	if (name === "check_domain") return await toolCheckDomain(args);
 	if (name === "list_brand_phishings") return await toolListBrand(args);
 	if (name === "get_recent_detections") return await toolRecent(args);
+	if (name === "get_brand_metadata") return await toolBrandMeta(args);
+	if (name === "get_cert_metadata") return await toolCertMeta(args);
+	if (name === "search_phishings") return await toolSearch(args);
 	throw { code: ERR.METHOD_NOT_FOUND, message: `Unknown tool: ${name}` };
 }
 
@@ -172,6 +227,54 @@ async function toolRecent(args: Record<string, unknown>) {
 	return textContent(
 		`${data.count} detection(s) since ${since}${brand ? ` (brand="${brand}")` : ""}:\n\n` +
 			JSON.stringify(data.results, null, 2),
+	);
+}
+
+async function toolBrandMeta(args: Record<string, unknown>) {
+	const brand = String(args.brand ?? "").trim().toLowerCase();
+	if (!brand) throw { code: ERR.INVALID_PARAMS, message: "'brand' is required" };
+	const r = await fetch(`${API_BASE}/api/v1/brands/${encodeURIComponent(brand)}.json`, {
+		headers: { "User-Agent": UA },
+	});
+	if (r.status === 404) {
+		const data = (await r.json().catch(() => ({}))) as { error?: string };
+		throw { code: ERR.INVALID_PARAMS, message: data.error || `Unknown brand: ${brand}` };
+	}
+	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
+	const data = await r.json();
+	return textContent(JSON.stringify(data, null, 2));
+}
+
+async function toolCertMeta(args: Record<string, unknown>) {
+	const cert = String(args.cert ?? "").trim();
+	if (!cert) throw { code: ERR.INVALID_PARAMS, message: "'cert' is required" };
+	const r = await fetch(`${API_BASE}/api/v1/certs/${encodeURIComponent(cert)}.json`, {
+		headers: { "User-Agent": UA },
+	});
+	if (r.status === 404) {
+		const data = (await r.json().catch(() => ({}))) as { error?: string };
+		throw { code: ERR.INVALID_PARAMS, message: data.error || `Unknown cert: ${cert}` };
+	}
+	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
+	const data = await r.json();
+	return textContent(JSON.stringify(data, null, 2));
+}
+
+async function toolSearch(args: Record<string, unknown>) {
+	const query = String(args.query ?? "").trim();
+	if (!query || query.length < 3) {
+		throw { code: ERR.INVALID_PARAMS, message: "'query' must be at least 3 characters" };
+	}
+	const limit = clampInt(args.limit, 1, 200, 50);
+	const params = new URLSearchParams({ q: query, limit: String(limit) });
+	const r = await fetch(`${API_BASE}/api/v1/search.json?${params}`, { headers: { "User-Agent": UA } });
+	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
+	const data = (await r.json()) as { count: number; results: unknown[] };
+	if (data.count === 0) {
+		return textContent(`No active phishings match "${query}".`);
+	}
+	return textContent(
+		`${data.count} match(es) for "${query}":\n\n` + JSON.stringify(data.results, null, 2),
 	);
 }
 

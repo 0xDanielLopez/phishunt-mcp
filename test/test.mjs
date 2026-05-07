@@ -67,19 +67,26 @@ await test("GET returns human-readable service card", async () => {
 	const j = await r.json();
 	assert(j.service === "phishunt-mcp", "wrong service name");
 	assert(Array.isArray(j.tools), "tools array missing");
-	assert(j.tools.length === 3, `expected 3 tools, got ${j.tools.length}`);
+	assert(j.tools.length === 6, `expected 6 tools, got ${j.tools.length}`);
 });
 
 console.log("\n## Tools listing");
 
-await test("tools/list returns 3 tools with proper schemas", async () => {
+await test("tools/list returns 6 tools with proper schemas", async () => {
 	const r = await rpc("tools/list", {});
 	assert(r.body.result?.tools, "no tools in result");
 	const tools = r.body.result.tools;
-	assert(tools.length === 3, `expected 3 tools, got ${tools.length}`);
+	assert(tools.length === 6, `expected 6 tools, got ${tools.length}`);
 	const names = tools.map((t) => t.name).sort();
 	assert(
-		JSON.stringify(names) === JSON.stringify(["check_domain", "get_recent_detections", "list_brand_phishings"]),
+		JSON.stringify(names) === JSON.stringify([
+			"check_domain",
+			"get_brand_metadata",
+			"get_cert_metadata",
+			"get_recent_detections",
+			"list_brand_phishings",
+			"search_phishings",
+		]),
 		`wrong tool names: ${names.join(", ")}`,
 	);
 	for (const t of tools) {
@@ -149,6 +156,76 @@ await test("get_recent_detections with invalid date returns INVALID_PARAMS error
 		arguments: { since: "not-a-date" },
 	});
 	assert(r.body.error, `expected error, got result: ${JSON.stringify(r.body.result)}`);
+	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
+});
+
+console.log("\n## Tool: get_brand_metadata");
+
+await test("get_brand_metadata for 'amazon' returns curated note + active count", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_brand_metadata",
+		arguments: { brand: "amazon" },
+	});
+	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	const data = JSON.parse(text);
+	assert(data.slug === "amazon", `wrong slug: ${data.slug}`);
+	assert(data.name === "Amazon", `wrong name: ${data.name}`);
+	assert(typeof data.notes === "string" && data.notes.length > 20, "missing notes");
+	assert(Number.isInteger(data.active_phishings), "active_phishings not int");
+});
+
+await test("get_brand_metadata for unknown brand returns INVALID_PARAMS", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_brand_metadata",
+		arguments: { brand: "this-is-not-a-real-brand-zzzz" },
+	});
+	assert(r.body.error, `expected error, got: ${JSON.stringify(r.body.result)}`);
+	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
+});
+
+console.log("\n## Tool: get_cert_metadata");
+
+await test("get_cert_metadata for 'WE1' returns operator + key_type", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_cert_metadata",
+		arguments: { cert: "WE1" },
+	});
+	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+	const data = JSON.parse(r.body.result.content[0].text);
+	assert(data.cert === "WE1", `wrong cert: ${data.cert}`);
+	assert(data.operator?.includes("Google"), `wrong operator: ${data.operator}`);
+	assert(data.key_type === "ECDSA", `wrong key_type: ${data.key_type}`);
+});
+
+await test("get_cert_metadata for unknown intermediate returns INVALID_PARAMS", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_cert_metadata",
+		arguments: { cert: "NOT_A_REAL_INTERMEDIATE_ZZZZ" },
+	});
+	assert(r.body.error, `expected error, got: ${JSON.stringify(r.body.result)}`);
+	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
+});
+
+console.log("\n## Tool: search_phishings");
+
+await test("search_phishings with valid query returns formatted results", async () => {
+	const r = await rpc("tools/call", {
+		name: "search_phishings",
+		arguments: { query: "instagram", limit: 3 },
+	});
+	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	// Either matched (N match(es) for ...) or empty (No active phishings ...)
+	assert(/match\(es\) for|No active phishings/.test(text), `unexpected text: ${text.slice(0, 200)}`);
+});
+
+await test("search_phishings rejects queries shorter than 3 chars", async () => {
+	const r = await rpc("tools/call", {
+		name: "search_phishings",
+		arguments: { query: "ab" },
+	});
+	assert(r.body.error, "expected error for short query");
 	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
 });
 
