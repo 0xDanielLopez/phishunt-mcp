@@ -8,7 +8,16 @@
 
 const API_BASE = "https://phishunt.io";
 const UA = "phishunt-mcp/0.1";
-const PROTOCOL_VERSION = "2025-03-26";
+const PROTOCOL_VERSION = "2025-03-26"; // advertised baseline + fallback for unsupported client requests
+// Protocol revisions this server speaks. initialize echoes the client's requested
+// version when it is one of these (per MCP spec), else falls back to PROTOCOL_VERSION.
+const SUPPORTED_PROTOCOL_VERSIONS = new Set([
+	"2025-11-25",
+	"2025-06-18",
+	"2025-03-26",
+	"2024-11-05",
+	"2024-10-07",
+]);
 const SERVER_INFO = { name: "phishunt-mcp", version: "0.1.0" };
 
 // ── JSON-RPC types ─────────────────────────────────────────────────────────
@@ -305,11 +314,16 @@ async function handleRpc(req: RpcRequest): Promise<RpcResponse> {
 
 	try {
 		if (req.method === "initialize") {
+			const requested = (req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion;
+			const negotiated =
+				typeof requested === "string" && SUPPORTED_PROTOCOL_VERSIONS.has(requested)
+					? requested
+					: PROTOCOL_VERSION;
 			return {
 				jsonrpc: "2.0",
 				id,
 				result: {
-					protocolVersion: PROTOCOL_VERSION,
+					protocolVersion: negotiated,
 					capabilities: { tools: {} },
 					serverInfo: SERVER_INFO,
 					instructions:
