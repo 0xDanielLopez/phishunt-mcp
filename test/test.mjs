@@ -5,13 +5,35 @@
 
 const URL_ENDPOINT = process.env.MCP_URL || "http://localhost:8787";
 
+// Against prod (mcp.phishunt.io) the Cloudflare rate-limit rule (>10 req/10s) would
+// otherwise fail ~half the suite with HTTP 429 even on a perfectly healthy server.
+// Self-throttle below the limit and back off on 429 so the prod run is a trustworthy
+// post-deploy gate. Local dev (wrangler) has no rate limit, so THROTTLE_MS = 0.
+const IS_PROD = /mcp\.phishunt\.io/.test(URL_ENDPOINT);
+const THROTTLE_MS = IS_PROD ? 1200 : 0;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function doFetch(url, opts) {
+	for (let attempt = 0; ; attempt++) {
+		if (THROTTLE_MS) await sleep(THROTTLE_MS);
+		const r = await fetch(url, opts);
+		if (r.status === 429 && attempt < 3) {
+			const ra = Number(r.headers.get("retry-after")) || 11;
+			console.log(`    (CF 429 rate-limit; waiting ${ra}s then retrying)`);
+			await sleep(ra * 1000);
+			continue;
+		}
+		return r;
+	}
+}
+
 let passed = 0;
 let failed = 0;
 const failures = [];
 
 async function rpc(method, params, id = 1) {
 	const body = { jsonrpc: "2.0", method, params, id };
-	const r = await fetch(URL_ENDPOINT, {
+	const r = await doFetch(URL_ENDPOINT, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(body),
@@ -62,7 +84,7 @@ await test("ping returns empty result", async () => {
 });
 
 await test("GET returns human-readable service card", async () => {
-	const r = await fetch(URL_ENDPOINT, { method: "GET" });
+	const r = await doFetch(URL_ENDPOINT, { method: "GET" });
 	assert(r.status === 200, `GET status ${r.status}`);
 	const j = await r.json();
 	assert(j.service === "phishunt-mcp", "wrong service name");
@@ -243,7 +265,7 @@ await test("unknown RPC method returns METHOD_NOT_FOUND", async () => {
 });
 
 await test("missing method field returns INVALID_REQUEST (-32600)", async () => {
-	const r = await fetch(URL_ENDPOINT, {
+	const r = await doFetch(URL_ENDPOINT, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ jsonrpc: "2.0", id: 1, foo: "bar" }),
@@ -253,7 +275,7 @@ await test("missing method field returns INVALID_REQUEST (-32600)", async () => 
 });
 
 await test("malformed JSON in POST returns parse error HTTP 400", async () => {
-	const r = await fetch(URL_ENDPOINT, {
+	const r = await doFetch(URL_ENDPOINT, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: "{not valid json",
@@ -266,7 +288,7 @@ await test("malformed JSON in POST returns parse error HTTP 400", async () => {
 console.log("\n## JSON-RPC 2.0 compliance");
 
 await test("batch request returns array of responses", async () => {
-	const r = await fetch(URL_ENDPOINT, {
+	const r = await doFetch(URL_ENDPOINT, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify([

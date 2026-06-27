@@ -17,6 +17,9 @@ suspicious domains, list phishings by targeted brand, and sync detection deltas.
 | `check_domain` | Is this domain/URL substring in the active phishunt feed? |
 | `list_brand_phishings` | List active phishings targeting a brand (e.g. `microsoft`). |
 | `get_recent_detections` | Delta sync: detections since an ISO date. |
+| `get_brand_metadata` | Curated brand metadata (display name, category, AI characterisation, active count). |
+| `get_cert_metadata` | Factual metadata for an abused TLS intermediate CA (operator, root, key type, siblings). |
+| `search_phishings` | Free-text search across active phishing URLs/domains/IPs (min 3 chars). |
 
 ## Use with Claude Desktop / Claude.ai / other MCP clients
 
