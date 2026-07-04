@@ -5,12 +5,13 @@
 
 const URL_ENDPOINT = process.env.MCP_URL || "http://localhost:8787";
 
-// Against prod (mcp.phishunt.io) the Cloudflare rate-limit rule (>10 req/10s) would
-// otherwise fail ~half the suite with HTTP 429 even on a perfectly healthy server.
-// Self-throttle below the limit and back off on 429 so the prod run is a trustworthy
-// post-deploy gate. Local dev (wrangler) has no rate limit, so THROTTLE_MS = 0.
+// Against prod (mcp.phishunt.io) the Cloudflare rate-limit rule (>5 req/10s,
+// tightened 2026-07-04) would otherwise fail most of the suite with HTTP 429
+// even on a perfectly healthy server. Self-throttle below the limit and back
+// off on 429 so the prod run is a trustworthy post-deploy gate. Local dev
+// (wrangler) has no rate limit, so THROTTLE_MS = 0.
 const IS_PROD = /mcp\.phishunt\.io/.test(URL_ENDPOINT);
-const THROTTLE_MS = IS_PROD ? 1200 : 0;
+const THROTTLE_MS = IS_PROD ? 2200 : 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function doFetch(url, opts) {
@@ -300,6 +301,33 @@ await test("batch request returns array of responses", async () => {
 	assert(Array.isArray(arr), `expected array, got ${typeof arr}`);
 	assert(arr.length === 2, `expected 2 responses, got ${arr.length}`);
 	assert(arr[0].id === 1 && arr[1].id === 2, "ids not preserved");
+});
+
+await test("empty batch returns -32600 Invalid Request", async () => {
+	const r = await doFetch(URL_ENDPOINT, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: "[]",
+	});
+	assert(r.status === 400, `expected 400, got ${r.status}`);
+	const j = await r.json();
+	assert(!Array.isArray(j), "expected single error object, got array");
+	assert(j.error?.code === -32600, `expected -32600, got ${j.error?.code}`);
+});
+
+await test("CORS preflight allows MCP-Protocol-Version header", async () => {
+	const r = await doFetch(URL_ENDPOINT, {
+		method: "OPTIONS",
+		headers: {
+			Origin: "https://example.com",
+			"Access-Control-Request-Method": "POST",
+			"Access-Control-Request-Headers": "content-type,mcp-protocol-version",
+		},
+	});
+	assert(r.status === 204, `expected 204, got ${r.status}`);
+	const allow = (r.headers.get("access-control-allow-headers") || "").toLowerCase();
+	assert(allow.includes("mcp-protocol-version"), `Allow-Headers missing MCP-Protocol-Version: "${allow}"`);
+	assert(r.headers.get("access-control-allow-origin") === "*", "missing ACAO on preflight");
 });
 
 // ── Summary ─────────────────────────────────────────────────────────────────

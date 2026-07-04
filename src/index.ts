@@ -20,6 +20,20 @@ const SUPPORTED_PROTOCOL_VERSIONS = new Set([
 ]);
 const SERVER_INFO = { name: "phishunt-mcp", version: "0.1.0" };
 
+// Upstream calls to phishunt.io must not hang for the whole Worker runtime
+// limit if the origin stalls; fail fast with a clean JSON-RPC error instead.
+const UPSTREAM_TIMEOUT_MS = 10_000;
+
+// Shared on every response (success AND error) so browser-based MCP clients
+// can read them. MCP-Protocol-Version / Mcp-Session-Id are sent by clients
+// on protocol >= 2025-06-18; omitting them from Allow-Headers fails the
+// preflight for those clients.
+const CORS_HEADERS = {
+	"Access-Control-Allow-Origin": "*",
+	"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+	"Access-Control-Allow-Headers": "Content-Type, MCP-Protocol-Version, Mcp-Session-Id",
+};
+
 // ── JSON-RPC types ─────────────────────────────────────────────────────────
 type RpcRequest = {
 	jsonrpc: "2.0";
@@ -176,7 +190,7 @@ async function toolCheckDomain(args: Record<string, unknown>) {
 	if (!domain) throw { code: ERR.INVALID_PARAMS, message: "'domain' is required" };
 
 	// Use feed.json (cached at CF edge) and substring-match URLs.
-	const r = await fetch(`${API_BASE}/feed.json`, { headers: { "User-Agent": UA } });
+	const r = await fetch(`${API_BASE}/feed.json`, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
 	if (!r.ok) throw { code: ERR.INTERNAL, message: `feed.json returned HTTP ${r.status}` };
 	const rows = (await r.json()) as Array<Record<string, unknown>>;
 	const matches = rows.filter((row) =>
@@ -199,7 +213,7 @@ async function toolListBrand(args: Record<string, unknown>) {
 	const limit = clampInt(args.limit, 1, 1000, 50);
 
 	const url = `${API_BASE}/api/v1/domains?company=${encodeURIComponent(brand)}&limit=${limit}&format=json`;
-	const r = await fetch(url, { headers: { "User-Agent": UA } });
+	const r = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
 	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
 	const data = (await r.json()) as { count: number; results: unknown[] };
 	if (data.count === 0) {
@@ -230,7 +244,7 @@ async function toolRecent(args: Record<string, unknown>) {
 	const params = new URLSearchParams({ since, limit: String(limit), format: "json" });
 	if (brand) params.set("company", brand);
 	const url = `${API_BASE}/api/v1/domains?${params}`;
-	const r = await fetch(url, { headers: { "User-Agent": UA } });
+	const r = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
 	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
 	const data = (await r.json()) as { count: number; results: unknown[] };
 	return textContent(
@@ -243,7 +257,7 @@ async function toolBrandMeta(args: Record<string, unknown>) {
 	const brand = String(args.brand ?? "").trim().toLowerCase();
 	if (!brand) throw { code: ERR.INVALID_PARAMS, message: "'brand' is required" };
 	const r = await fetch(`${API_BASE}/api/v1/brands/${encodeURIComponent(brand)}.json`, {
-		headers: { "User-Agent": UA },
+		headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
 	});
 	if (r.status === 404) {
 		const data = (await r.json().catch(() => ({}))) as { error?: string };
@@ -258,7 +272,7 @@ async function toolCertMeta(args: Record<string, unknown>) {
 	const cert = String(args.cert ?? "").trim();
 	if (!cert) throw { code: ERR.INVALID_PARAMS, message: "'cert' is required" };
 	const r = await fetch(`${API_BASE}/api/v1/certs/${encodeURIComponent(cert)}.json`, {
-		headers: { "User-Agent": UA },
+		headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
 	});
 	if (r.status === 404) {
 		const data = (await r.json().catch(() => ({}))) as { error?: string };
@@ -276,7 +290,7 @@ async function toolSearch(args: Record<string, unknown>) {
 	}
 	const limit = clampInt(args.limit, 1, 200, 50);
 	const params = new URLSearchParams({ q: query, limit: String(limit) });
-	const r = await fetch(`${API_BASE}/api/v1/search.json?${params}`, { headers: { "User-Agent": UA } });
+	const r = await fetch(`${API_BASE}/api/v1/search.json?${params}`, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
 	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
 	const data = (await r.json()) as { count: number; results: unknown[] };
 	if (data.count === 0) {
@@ -387,12 +401,7 @@ export default {
 		if (request.method === "OPTIONS") {
 			return new Response(null, {
 				status: 204,
-				headers: {
-					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-					"Access-Control-Allow-Headers": "Content-Type",
-					"Access-Control-Max-Age": "86400",
-				},
+				headers: { ...CORS_HEADERS, "Access-Control-Max-Age": "86400" },
 			});
 		}
 
@@ -410,17 +419,15 @@ export default {
 				source: "https://github.com/0xDanielLopez/phishunt-mcp",
 			};
 			return Response.json(body, {
-				headers: {
-					"Cache-Control": "public, max-age=300",
-					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-					"Access-Control-Allow-Headers": "Content-Type",
-				},
+				headers: { "Cache-Control": "public, max-age=300", ...CORS_HEADERS },
 			});
 		}
 
 		if (request.method !== "POST") {
-			return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, POST" } });
+			return new Response("Method Not Allowed", {
+				status: 405,
+				headers: { Allow: "GET, POST", ...CORS_HEADERS },
+			});
 		}
 
 		let req: RpcRequest;
@@ -429,23 +436,25 @@ export default {
 		} catch {
 			return Response.json(
 				{ jsonrpc: "2.0", id: null, error: { code: ERR.PARSE, message: "Parse error" } },
-				{ status: 400 },
+				{ status: 400, headers: CORS_HEADERS },
 			);
 		}
 
 		// Handle batch (array of requests) per JSON-RPC 2.0 spec.
 		if (Array.isArray(req)) {
+			// Spec: an empty batch is Invalid Request, answered with a single
+			// error object (not an empty array).
+			if (req.length === 0) {
+				return Response.json(
+					{ jsonrpc: "2.0", id: null, error: { code: ERR.INVALID_REQUEST, message: "Invalid Request: empty batch" } },
+					{ status: 400, headers: CORS_HEADERS },
+				);
+			}
 			const out = await Promise.all(req.map(handleRpc));
-			return Response.json(out);
+			return Response.json(out, { headers: CORS_HEADERS });
 		}
 
 		const response = await handleRpc(req);
-		return Response.json(response, {
-			headers: {
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-				"Access-Control-Allow-Headers": "Content-Type",
-			},
-		});
+		return Response.json(response, { headers: CORS_HEADERS });
 	},
 };
