@@ -10,11 +10,13 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 const URL_ENDPOINT = process.env.MCP_URL || "http://localhost:8787";
 
-// Against prod (mcp.phishunt.io) the CF rate-limit rule (CF Error 1015 / HTTP
-// 429) trips after ~10 back-to-back requests. The SDK transport fires with no
-// pacing, so space each test when hitting prod (mirrors test.mjs THROTTLE_MS).
+// Against prod (mcp.phishunt.io) the CF rate-limit rule (>5 req/10s per IP,
+// tightened 2026-07-04; CF Error 1015 / HTTP 429) trips fast: SDK operations
+// fire 2-3 unpaced POSTs each (initialize + notified + call). Space tests
+// wide when hitting prod, and retry once after the advertised backoff if a
+// burst still trips the rule (mirrors test.mjs doFetch).
 const IS_PROD = /mcp\.phishunt\.io/.test(URL_ENDPOINT);
-const THROTTLE_MS = IS_PROD ? 1200 : 0;
+const THROTTLE_MS = IS_PROD ? 4000 : 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let passed = 0;
@@ -32,6 +34,18 @@ async function test(name, fn) {
 		console.log(`  ✓ ${name}`);
 		passed++;
 	} catch (e) {
+		if (IS_PROD && /rate.?limit|1015|429/i.test(e.message)) {
+			console.log(`    (CF 429 rate-limit; waiting 31s then retrying "${name}")`);
+			await sleep(31_000);
+			try {
+				await fn();
+				console.log(`  ✓ ${name} (after retry)`);
+				passed++;
+				return;
+			} catch (e2) {
+				e = e2;
+			}
+		}
 		console.log(`  ✗ ${name}\n      ${e.message}`);
 		failed++;
 		failures.push({ name, error: e.message });
