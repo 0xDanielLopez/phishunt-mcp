@@ -20,6 +20,7 @@ suspicious domains, list phishings by targeted brand, and sync detection deltas.
 | `get_brand_metadata` | Curated brand metadata (display name, category, AI characterisation, active count). |
 | `get_cert_metadata` | Factual metadata for an abused TLS intermediate CA (operator, root, key type, siblings). |
 | `search_phishings` | Free-text search across active phishing URLs/domains/IPs (min 3 chars). |
+| `analyze_url` | Passive phishing-signal analysis of any URL/domain (URL-shape heuristics, stored score/verdict if known, historical detections). Unknown suspicious domains are auto-queued for full analysis. |
 
 ## Use with Claude Desktop / Claude.ai / other MCP clients
 

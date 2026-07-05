@@ -90,19 +90,20 @@ await test("GET returns human-readable service card", async () => {
 	const j = await r.json();
 	assert(j.service === "phishunt-mcp", "wrong service name");
 	assert(Array.isArray(j.tools), "tools array missing");
-	assert(j.tools.length === 6, `expected 6 tools, got ${j.tools.length}`);
+	assert(j.tools.length === 7, `expected 7 tools, got ${j.tools.length}`);
 });
 
 console.log("\n## Tools listing");
 
-await test("tools/list returns 6 tools with proper schemas", async () => {
+await test("tools/list returns 7 tools with proper schemas", async () => {
 	const r = await rpc("tools/list", {});
 	assert(r.body.result?.tools, "no tools in result");
 	const tools = r.body.result.tools;
-	assert(tools.length === 6, `expected 6 tools, got ${tools.length}`);
+	assert(tools.length === 7, `expected 7 tools, got ${tools.length}`);
 	const names = tools.map((t) => t.name).sort();
 	assert(
 		JSON.stringify(names) === JSON.stringify([
+			"analyze_url",
 			"check_domain",
 			"get_brand_metadata",
 			"get_cert_metadata",
@@ -249,6 +250,34 @@ await test("search_phishings rejects queries shorter than 3 chars", async () => 
 		arguments: { query: "ab" },
 	});
 	assert(r.body.error, "expected error for short query");
+	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
+});
+
+console.log("\n## Tool: analyze_url");
+
+await test("analyze_url with a syntactically valid URL returns live_analysis JSON", async () => {
+	const r = await rpc("tools/call", {
+		name: "analyze_url",
+		arguments: { url: "https://example-test-domain-phishunt.com" },
+	});
+	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	const data = JSON.parse(text);
+	assert(data && typeof data === "object" && "live_analysis" in data, `expected 'live_analysis' key: ${text.slice(0, 200)}`);
+});
+
+await test("analyze_url requires 'url' param", async () => {
+	const r = await rpc("tools/call", { name: "analyze_url", arguments: {} });
+	assert(r.body.error, "expected error for missing url");
+	assert(r.body.error.code === -32602, `expected INVALID_PARAMS, got ${r.body.error.code}`);
+});
+
+await test("analyze_url with unsupported scheme returns INVALID_PARAMS", async () => {
+	const r = await rpc("tools/call", {
+		name: "analyze_url",
+		arguments: { url: "ftp://x" },
+	});
+	assert(r.body.error, `expected error for unsupported scheme, got: ${JSON.stringify(r.body.result)}`);
 	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
 });
 

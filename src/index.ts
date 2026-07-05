@@ -172,6 +172,21 @@ const TOOLS = [
 			required: ["query"],
 		},
 	},
+	{
+		name: "analyze_url",
+		description:
+			"Analyze any URL for phishing signals WITHOUT contacting it (passive): live URL-shape heuristics (brand keyword match, typosquat distance, homograph, entropy, abused TLD), phishunt's stored score/verdict if the domain is already known, and historical detections on the same apex domain. Suspicious unknown domains are automatically queued for full pipeline analysis.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				url: {
+					type: "string",
+					description: "Full URL or bare domain to analyze",
+				},
+			},
+			required: ["url"],
+		},
+	},
 ] as const;
 
 // ── Tool implementations ───────────────────────────────────────────────────
@@ -182,6 +197,7 @@ async function callTool(name: string, args: Record<string, unknown>) {
 	if (name === "get_brand_metadata") return await toolBrandMeta(args);
 	if (name === "get_cert_metadata") return await toolCertMeta(args);
 	if (name === "search_phishings") return await toolSearch(args);
+	if (name === "analyze_url") return await toolAnalyzeUrl(args);
 	throw { code: ERR.METHOD_NOT_FOUND, message: `Unknown tool: ${name}` };
 }
 
@@ -299,6 +315,21 @@ async function toolSearch(args: Record<string, unknown>) {
 	return textContent(
 		`${data.count} match(es) for "${query}":\n\n` + JSON.stringify(data.results, null, 2),
 	);
+}
+
+async function toolAnalyzeUrl(args: Record<string, unknown>) {
+	const url = String(args.url ?? "").trim();
+	if (!url) throw { code: ERR.INVALID_PARAMS, message: "'url' is required" };
+	const r = await fetch(`${API_BASE}/api/v1/analyze?url=${encodeURIComponent(url)}`, {
+		headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+	});
+	if (r.status === 400) {
+		const data = (await r.json().catch(() => ({}))) as { error?: string };
+		throw { code: ERR.INVALID_PARAMS, message: data.error || `Invalid 'url': ${url}` };
+	}
+	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
+	const data = await r.json();
+	return textContent(JSON.stringify(data, null, 2));
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

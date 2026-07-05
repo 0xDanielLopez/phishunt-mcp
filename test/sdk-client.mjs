@@ -79,13 +79,14 @@ await test("server advertises tools capability", async () => {
 console.log("\n## Tool invocation via SDK");
 
 let tools;
-await test("client.listTools() returns 6 tools", async () => {
+await test("client.listTools() returns 7 tools", async () => {
 	const r = await client.listTools();
 	tools = r.tools;
-	assert(tools.length === 6, `expected 6, got ${tools.length}`);
+	assert(tools.length === 7, `expected 7, got ${tools.length}`);
 	const names = tools.map((t) => t.name).sort();
 	assert(
 		JSON.stringify(names) === JSON.stringify([
+			"analyze_url",
 			"check_domain",
 			"get_brand_metadata",
 			"get_cert_metadata",
@@ -155,6 +156,16 @@ await test("client.callTool('search_phishings') with valid query returns content
 	});
 	assert(Array.isArray(r.content), "content is not array");
 	assert(r.content[0].text.length > 10, "empty content");
+});
+
+await test("client.callTool('analyze_url') returns live_analysis JSON", async () => {
+	const r = await client.callTool({
+		name: "analyze_url",
+		arguments: { url: "https://example-test-domain-phishunt.com" },
+	});
+	assert(Array.isArray(r.content), "content is not array");
+	const data = JSON.parse(r.content[0].text);
+	assert(data && typeof data === "object" && "live_analysis" in data, "expected 'live_analysis' key");
 });
 
 // ── Error cases via SDK ────────────────────────────────────────────────────
