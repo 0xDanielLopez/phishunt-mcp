@@ -8,10 +8,12 @@ const URL_ENDPOINT = process.env.MCP_URL || "http://localhost:8787";
 // Against prod (mcp.phishunt.io) the Cloudflare rate-limit rule (>5 req/10s,
 // tightened 2026-07-04) would otherwise fail most of the suite with HTTP 429
 // even on a perfectly healthy server. Self-throttle below the limit and back
-// off on 429 so the prod run is a trustworthy post-deploy gate. Local dev
-// (wrangler) has no rate limit, so THROTTLE_MS = 0.
+// off on 429 so the prod run is a trustworthy post-deploy gate. Local runs
+// (wrangler dev) also need pacing since 2026-07-05: the same CF rule now
+// covers phishunt.io/api/*, which the API-backed tools fetch upstream from
+// the laptop's IP. Override with THROTTLE_MS=0 for offline-only runs.
 const IS_PROD = /mcp\.phishunt\.io/.test(URL_ENDPOINT);
-const THROTTLE_MS = IS_PROD ? 2200 : 0;
+const THROTTLE_MS = Number(process.env.THROTTLE_MS ?? (IS_PROD ? 2200 : 2100));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function doFetch(url, opts) {

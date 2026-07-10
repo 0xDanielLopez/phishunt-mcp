@@ -15,8 +15,10 @@ const URL_ENDPOINT = process.env.MCP_URL || "http://localhost:8787";
 // fire 2-3 unpaced POSTs each (initialize + notified + call). Space tests
 // wide when hitting prod, and retry once after the advertised backoff if a
 // burst still trips the rule (mirrors test.mjs doFetch).
+// Local runs also pace since 2026-07-05: the CF rule covers phishunt.io/api/*
+// which the API-backed tools hit upstream. THROTTLE_MS=0 to force off.
 const IS_PROD = /mcp\.phishunt\.io/.test(URL_ENDPOINT);
-const THROTTLE_MS = IS_PROD ? 4000 : 0;
+const THROTTLE_MS = Number(process.env.THROTTLE_MS ?? (IS_PROD ? 4000 : 2500));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let passed = 0;
