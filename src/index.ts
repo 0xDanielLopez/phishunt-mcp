@@ -1,14 +1,14 @@
 // phishunt MCP server — wraps the public phishunt.io API as MCP tools.
 //
 // Protocol: Model Context Protocol over HTTP (JSON-RPC 2.0, single-shot).
-// Spec: https://spec.modelcontextprotocol.io/specification/2025-03-26/
+// Spec: https://spec.modelcontextprotocol.io/specification/2025-11-25/
 // Deploy: wrangler deploy — routes mcp.phishunt.io/*
 //
 // Read-only. No auth. All data CC0 per phishunt TOS.
 
 const API_BASE = "https://phishunt.io";
 const UA = "phishunt-mcp/0.1";
-const PROTOCOL_VERSION = "2025-03-26"; // advertised baseline + fallback for unsupported client requests
+const PROTOCOL_VERSION = "2025-11-25"; // advertised baseline + fallback for unsupported client requests
 // Protocol revisions this server speaks. initialize echoes the client's requested
 // version when it is one of these (per MCP spec), else falls back to PROTOCOL_VERSION.
 const SUPPORTED_PROTOCOL_VERSIONS = new Set([
@@ -382,7 +382,10 @@ async function handleRpc(req: RpcRequest): Promise<RpcResponse> {
 		}
 
 		if (req.method === "notifications/initialized") {
-			// Notification — no response expected, but we return empty ok for HTTP single-shot.
+			// True notifications (no "id") are intercepted earlier in fetch() with
+			// a 202 and never reach this branch. This stays as a fallback for the
+			// batch case and for any malformed call that sends an id alongside a
+			// notifications/* method.
 			return { jsonrpc: "2.0", id, result: {} };
 		}
 
@@ -483,6 +486,18 @@ export default {
 			}
 			const out = await Promise.all(req.map(handleRpc));
 			return Response.json(out, { headers: CORS_HEADERS });
+		}
+
+		// JSON-RPC 2.0 notifications are Request objects with no "id" member,
+		// and the spec says the server MUST NOT reply to them. MCP's
+		// streamable-http transport pins this further: 202 Accepted, empty
+		// body, no JSON-RPC envelope at all.
+		if (
+			typeof req?.method === "string" &&
+			req.method.startsWith("notifications/") &&
+			req.id === undefined
+		) {
+			return new Response(null, { status: 202, headers: CORS_HEADERS });
 		}
 
 		const response = await handleRpc(req);

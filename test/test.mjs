@@ -68,7 +68,7 @@ console.log("## Protocol handshake");
 
 await test("initialize returns server info + protocol version + tools capability", async () => {
 	const r = await rpc("initialize", {
-		protocolVersion: "2025-03-26",
+		protocolVersion: "2025-11-25",
 		capabilities: {},
 		clientInfo: { name: "phishunt-mcp-test", version: "1" },
 	});
@@ -77,7 +77,7 @@ await test("initialize returns server info + protocol version + tools capability
 	assert(r.body.id === 1, `wrong id: ${r.body.id}`);
 	assert(r.body.result, `no result: ${JSON.stringify(r.body.error)}`);
 	assert(r.body.result.serverInfo?.name === "phishunt-mcp", "wrong server name");
-	assert(r.body.result.protocolVersion === "2025-03-26", "wrong protocol version");
+	assert(r.body.result.protocolVersion === "2025-11-25", "wrong protocol version");
 	assert(r.body.result.capabilities?.tools !== undefined, "missing tools capability");
 });
 
@@ -344,6 +344,17 @@ await test("empty batch returns -32600 Invalid Request", async () => {
 	const j = await r.json();
 	assert(!Array.isArray(j), "expected single error object, got array");
 	assert(j.error?.code === -32600, `expected -32600, got ${j.error?.code}`);
+});
+
+await test("notifications/initialized returns 202 with empty body", async () => {
+	const r = await doFetch(URL_ENDPOINT, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+	});
+	assert(r.status === 202, `expected 202, got ${r.status}`);
+	const text = await r.text();
+	assert(text === "", `expected empty body, got: ${text.slice(0, 200)}`);
 });
 
 await test("CORS preflight allows MCP-Protocol-Version header", async () => {

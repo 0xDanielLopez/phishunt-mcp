@@ -6,7 +6,7 @@ Exposes the public phishing-domains feed as MCP tools so AI agents can look up
 suspicious domains, list phishings by targeted brand, and sync detection deltas.
 
 - **Endpoint**: `https://mcp.phishunt.io/` (HTTP JSON-RPC 2.0, POST)
-- **Protocol version**: 2025-03-26
+- **Protocol version**: 2025-11-25
 - **Auth**: none (data is CC0)
 - **License (data)**: CC0-1.0 · **License (code)**: MIT
 
