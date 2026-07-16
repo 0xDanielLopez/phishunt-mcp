@@ -484,7 +484,29 @@ export default {
 					{ status: 400, headers: CORS_HEADERS },
 				);
 			}
-			const out = await Promise.all(req.map(handleRpc));
+			const settled = await Promise.all(
+				req.map(async (entry) => ({ entry, response: await handleRpc(entry as RpcRequest) })),
+			);
+			// Spec: a Notification (Request object with no "id" member) MUST NOT
+			// get a response entry, even inside a batch. This codebase also treats
+			// an explicit id:null the same way, matching the id ?? null
+			// normalization used elsewhere here and the single-notification 202
+			// short-circuit below. Malformed non-object entries (e.g. a bare
+			// number) are NOT notifications - they still get their -32600 Invalid
+			// Request response, per the spec's own invalid-batch example.
+			const out = settled
+				.filter(({ entry: e }) => {
+					const isPlainObject = e !== null && typeof e === "object" && !Array.isArray(e);
+					const isNotification = isPlainObject && (!("id" in (e as object)) || (e as RpcRequest).id === null);
+					return !isNotification;
+				})
+				.map(({ response }) => response);
+
+			// A batch made up entirely of notifications gets the same treatment as
+			// a single notification: 202 Accepted, empty body, no JSON-RPC envelope.
+			if (out.length === 0) {
+				return new Response(null, { status: 202, headers: CORS_HEADERS });
+			}
 			return Response.json(out, { headers: CORS_HEADERS });
 		}
 

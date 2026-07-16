@@ -346,6 +346,57 @@ await test("empty batch returns -32600 Invalid Request", async () => {
 	assert(j.error?.code === -32600, `expected -32600, got ${j.error?.code}`);
 });
 
+await test("mixed batch (requests + notifications) returns only request responses", async () => {
+	const r = await doFetch(URL_ENDPOINT, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify([
+			{ jsonrpc: "2.0", method: "ping", id: 1 },
+			{ jsonrpc: "2.0", method: "notifications/initialized" }, // no id: notification
+			{ jsonrpc: "2.0", method: "ping", id: 2 },
+			{ jsonrpc: "2.0", method: "notifications/initialized", id: null }, // id:null: also a notification
+		]),
+	});
+	assert(r.status === 200, `expected 200, got ${r.status}`);
+	const arr = await r.json();
+	assert(Array.isArray(arr), `expected array, got ${typeof arr}`);
+	assert(arr.length === 2, `expected 2 responses (notifications dropped), got ${arr.length}: ${JSON.stringify(arr)}`);
+	const ids = arr.map((x) => x.id).sort();
+	assert(JSON.stringify(ids) === JSON.stringify([1, 2]), `expected ids [1,2], got ${JSON.stringify(ids)}`);
+});
+
+await test("all-notifications batch returns 202 with empty body", async () => {
+	const r = await doFetch(URL_ENDPOINT, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify([
+			{ jsonrpc: "2.0", method: "notifications/initialized" },
+			{ jsonrpc: "2.0", method: "ping", id: null },
+		]),
+	});
+	assert(r.status === 202, `expected 202, got ${r.status}`);
+	const text = await r.text();
+	assert(text === "", `expected empty body, got: ${text.slice(0, 200)}`);
+});
+
+await test("normal batch of requests (no notifications) is unaffected", async () => {
+	const r = await doFetch(URL_ENDPOINT, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify([
+			{ jsonrpc: "2.0", method: "ping", id: "a" },
+			{ jsonrpc: "2.0", method: "tools/list", id: "b" },
+			{ jsonrpc: "2.0", method: "unknown/method", id: "c" },
+		]),
+	});
+	assert(r.status === 200, `expected 200, got ${r.status}`);
+	const arr = await r.json();
+	assert(Array.isArray(arr) && arr.length === 3, `expected 3 responses, got ${JSON.stringify(arr)}`);
+	const ids = arr.map((x) => x.id).sort();
+	assert(JSON.stringify(ids) === JSON.stringify(["a", "b", "c"]), `ids not preserved: ${JSON.stringify(ids)}`);
+	assert(arr.find((x) => x.id === "c").error?.code === -32601, "unknown method should still error inside batch");
+});
+
 await test("notifications/initialized returns 202 with empty body", async () => {
 	const r = await doFetch(URL_ENDPOINT, {
 		method: "POST",
