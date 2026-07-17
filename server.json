@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.0xdaniellopez/phishunt",
+  "name": "io.github.0xDanielLopez/phishunt",
   "title": "Phishunt",
   "description": "Public phishing feed: suspicious/confirmed phishing URLs detected hourly. No auth, CC0.",
   "repository": {
