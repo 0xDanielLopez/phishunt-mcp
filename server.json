@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.0xdaniellopez/phishunt",
+  "title": "Phishunt",
+  "description": "Public phishing feed: suspicious/confirmed phishing URLs detected hourly. No auth, CC0.",
+  "repository": {
+    "url": "https://github.com/0xDanielLopez/phishunt-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://phishunt.io",
+  "version": "0.1.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.phishunt.io/"
+    }
+  ]
+}
