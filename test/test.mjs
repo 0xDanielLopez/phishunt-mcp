@@ -92,16 +92,16 @@ await test("GET returns human-readable service card", async () => {
 	const j = await r.json();
 	assert(j.service === "phishunt-mcp", "wrong service name");
 	assert(Array.isArray(j.tools), "tools array missing");
-	assert(j.tools.length === 7, `expected 7 tools, got ${j.tools.length}`);
+	assert(j.tools.length === 8, `expected 8 tools, got ${j.tools.length}`);
 });
 
 console.log("\n## Tools listing");
 
-await test("tools/list returns 7 tools with proper schemas", async () => {
+await test("tools/list returns 8 tools with proper schemas", async () => {
 	const r = await rpc("tools/list", {});
 	assert(r.body.result?.tools, "no tools in result");
 	const tools = r.body.result.tools;
-	assert(tools.length === 7, `expected 7 tools, got ${tools.length}`);
+	assert(tools.length === 8, `expected 8 tools, got ${tools.length}`);
 	const names = tools.map((t) => t.name).sort();
 	assert(
 		JSON.stringify(names) === JSON.stringify([
@@ -110,6 +110,7 @@ await test("tools/list returns 7 tools with proper schemas", async () => {
 			"get_brand_metadata",
 			"get_cert_metadata",
 			"get_recent_detections",
+			"get_related_infrastructure",
 			"list_brand_phishings",
 			"search_phishings",
 		]),
@@ -281,6 +282,30 @@ await test("analyze_url with unsupported scheme returns INVALID_PARAMS", async (
 	});
 	assert(r.body.error, `expected error for unsupported scheme, got: ${JSON.stringify(r.body.result)}`);
 	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
+});
+
+console.log("\n## Tool: get_related_infrastructure");
+
+await test("get_related_infrastructure returns correlation text or 'not in feed' note", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_related_infrastructure",
+		arguments: { domain: "m4ntapaset" },
+	});
+	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text.toLowerCase();
+	// This tool hits two live upstream endpoints in sequence (search + related),
+	// so whether the sample domain is currently in the feed is not guaranteed -
+	// accept either outcome, same tolerance pattern as list_brand_phishings.
+	assert(
+		text.includes("related infrastructure") || text.includes("not in the active phishunt feed"),
+		`unexpected text: ${text.slice(0, 200)}`,
+	);
+});
+
+await test("get_related_infrastructure requires 'domain' param", async () => {
+	const r = await rpc("tools/call", { name: "get_related_infrastructure", arguments: {} });
+	assert(r.body.error, "expected error for missing domain");
+	assert(r.body.error.code === -32602, `expected INVALID_PARAMS, got ${r.body.error.code}`);
 });
 
 console.log("\n## Error handling");

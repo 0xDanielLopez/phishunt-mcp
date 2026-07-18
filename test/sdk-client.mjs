@@ -81,10 +81,10 @@ await test("server advertises tools capability", async () => {
 console.log("\n## Tool invocation via SDK");
 
 let tools;
-await test("client.listTools() returns 7 tools", async () => {
+await test("client.listTools() returns 8 tools", async () => {
 	const r = await client.listTools();
 	tools = r.tools;
-	assert(tools.length === 7, `expected 7, got ${tools.length}`);
+	assert(tools.length === 8, `expected 8, got ${tools.length}`);
 	const names = tools.map((t) => t.name).sort();
 	assert(
 		JSON.stringify(names) === JSON.stringify([
@@ -93,6 +93,7 @@ await test("client.listTools() returns 7 tools", async () => {
 			"get_brand_metadata",
 			"get_cert_metadata",
 			"get_recent_detections",
+			"get_related_infrastructure",
 			"list_brand_phishings",
 			"search_phishings",
 		]),

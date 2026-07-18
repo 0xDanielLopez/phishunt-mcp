@@ -187,6 +187,27 @@ const TOOLS = [
 			required: ["url"],
 		},
 	},
+	{
+		name: "get_related_infrastructure",
+		description:
+			"Find infrastructure and content overlap between a known phishing indicator and other phishunt detections: shared IP, TLS certificate, nameservers, favicon/screenshot, redirect target, or naming pattern. Surfaces a possible campaign or suspected cluster the indicator belongs to. This is observed technical overlap (related infrastructure), NOT an attribution claim about who operates the sites.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				domain: {
+					type: "string",
+					description:
+						"A domain or URL that appears in the phishunt feed (e.g. 'secure-login-example.com'). Resolved to its most recent detection, then correlated.",
+				},
+				limit: {
+					type: "number",
+					description: "Max related indicators to return (1-50). Default 10.",
+					default: 10,
+				},
+			},
+			required: ["domain"],
+		},
+	},
 ] as const;
 
 // ── Tool implementations ───────────────────────────────────────────────────
@@ -198,6 +219,7 @@ async function callTool(name: string, args: Record<string, unknown>) {
 	if (name === "get_cert_metadata") return await toolCertMeta(args);
 	if (name === "search_phishings") return await toolSearch(args);
 	if (name === "analyze_url") return await toolAnalyzeUrl(args);
+	if (name === "get_related_infrastructure") return await toolRelatedInfra(args);
 	throw { code: ERR.METHOD_NOT_FOUND, message: `Unknown tool: ${name}` };
 }
 
@@ -330,6 +352,80 @@ async function toolAnalyzeUrl(args: Record<string, unknown>) {
 	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
 	const data = await r.json();
 	return textContent(JSON.stringify(data, null, 2));
+}
+
+// Implements the get_related_infrastructure tool: resolve a domain/URL to its
+// most recent phishunt detection, then correlate it against other detections
+// sharing infrastructure/content signals (IP, cert, nameservers, favicon,
+// screenshot, redirect target, naming pattern).
+async function toolRelatedInfra(args: Record<string, unknown>) {
+	const raw = String(args.domain ?? "").trim().toLowerCase();
+	if (!raw) throw { code: ERR.INVALID_PARAMS, message: "'domain' is required" };
+
+	// Strip a leading scheme and any path so a pasted URL still resolves to a
+	// bare host, then drop a leading www. so "www.foo.com" and "foo.com" match.
+	const hostOf = (s: string): string =>
+		s.replace(/^[a-z]+:\/\//, "").split("/")[0].replace(/^www\./, "");
+	const host = hostOf(raw);
+	if (host.length < 3) {
+		throw { code: ERR.INVALID_PARAMS, message: "'domain' must be at least 3 characters" };
+	}
+
+	// 1) Resolve domain -> uuid via the existing search endpoint.
+	const searchParams = new URLSearchParams({ q: host, limit: "10" });
+	const searchResp = await fetch(`${API_BASE}/api/v1/search.json?${searchParams}`, {
+		headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+	});
+	if (!searchResp.ok) throw { code: ERR.INTERNAL, message: `search API returned HTTP ${searchResp.status}` };
+	const searchData = (await searchResp.json()) as {
+		count: number;
+		results: Array<{ uuid?: string; domain?: string; [key: string]: unknown }>;
+	};
+	if (searchData.count === 0) {
+		return textContent(
+			`"${raw}" is not in the active phishunt feed, so there is no detection to correlate. Try check_domain or search_phishings first.`,
+		);
+	}
+	// Prefer an exact host match; results are otherwise ordered most-recent-first.
+	const exact = searchData.results.find((r) => r.domain?.toLowerCase() === host);
+	const best = exact ?? searchData.results[0];
+	const uuid = String(best.uuid ?? "");
+	const resolvedDomain = String(best.domain ?? host);
+
+	// 2) Correlate via the related-infrastructure endpoint.
+	const limit = clampInt(args.limit, 1, 50, 10);
+	const relatedResp = await fetch(
+		`${API_BASE}/api/v1/domains/${encodeURIComponent(uuid)}/related?limit=${limit}`,
+		{ headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) },
+	);
+	if (relatedResp.status === 404) {
+		const data = (await relatedResp.json().catch(() => ({}))) as { error?: string };
+		throw { code: ERR.INTERNAL, message: data.error || `Unknown uuid: ${uuid}` };
+	}
+	if (!relatedResp.ok) throw { code: ERR.INTERNAL, message: `related API returned HTTP ${relatedResp.status}` };
+	const data = (await relatedResp.json()) as {
+		uuid: string;
+		domain: string;
+		algorithm_version?: string;
+		generated_at?: string;
+		cluster: { id: string | number; size: number; url?: string } | null;
+		count: number;
+		results: unknown[];
+	};
+
+	// 3) Format.
+	if (data.count === 0) {
+		return textContent(
+			`No related infrastructure found for "${resolvedDomain}" (uuid ${uuid}). It is not currently linked to other detections. Note: correlation is rebuilt daily and covers only the active feed.`,
+		);
+	}
+	let header = `Related infrastructure for "${resolvedDomain}" (${data.count} related indicator(s)`;
+	if (data.cluster) {
+		header += `, part of a possible campaign / suspected cluster #${data.cluster.id} with ${data.cluster.size} indicators`;
+	}
+	header += `). These are shared-infrastructure/content links, not an attribution claim.`;
+
+	return textContent(`${header}\n\n\n${JSON.stringify(data, null, 2)}`);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
