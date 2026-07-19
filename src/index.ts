@@ -208,6 +208,46 @@ const TOOLS = [
 			required: ["domain"],
 		},
 	},
+	{
+		name: "get_campaigns",
+		description:
+			"List possible campaigns / suspected clusters: groups of phishing indicators that share infrastructure or content signals (same TLS certificate, IP, hosting, page content, etc.), computed by a daily correlation job. This is shared-infrastructure grouping of public detections, not an attribution claim - clusters are labeled 'possible campaign' or 'suspected cluster' only, never an actor or group.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				limit: {
+					type: "number",
+					description: "Max campaigns to return (1-50). Default 10.",
+					default: 10,
+				},
+				brand: {
+					type: "string",
+					description: "Filter to campaigns with at least one member targeting this brand slug (e.g. 'coinbase').",
+				},
+				active_only: {
+					type: "boolean",
+					description: "If true, only return campaigns with at least one currently-active member. Default false (all).",
+					default: false,
+				},
+			},
+			required: [],
+		},
+	},
+	{
+		name: "get_campaign",
+		description:
+			"Get full detail on one possible campaign / suspected cluster: evidence breakdown and every member indicator (domain, targeted brand, status, relationship score, detail page). Shared-infrastructure grouping of public detections, not an attribution claim.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				campaign_id: {
+					type: "number",
+					description: "Campaign (cluster) id, from the 'id' field of get_campaigns results.",
+				},
+			},
+			required: ["campaign_id"],
+		},
+	},
 ] as const;
 
 // ── Tool implementations ───────────────────────────────────────────────────
@@ -220,6 +260,8 @@ async function callTool(name: string, args: Record<string, unknown>) {
 	if (name === "search_phishings") return await toolSearch(args);
 	if (name === "analyze_url") return await toolAnalyzeUrl(args);
 	if (name === "get_related_infrastructure") return await toolRelatedInfra(args);
+	if (name === "get_campaigns") return await toolCampaigns(args);
+	if (name === "get_campaign") return await toolCampaign(args);
 	throw { code: ERR.METHOD_NOT_FOUND, message: `Unknown tool: ${name}` };
 }
 
@@ -424,8 +466,139 @@ async function toolRelatedInfra(args: Record<string, unknown>) {
 		header += `, part of a possible campaign / suspected cluster #${data.cluster.id} with ${data.cluster.size} indicators`;
 	}
 	header += `). These are shared-infrastructure/content links, not an attribution claim.`;
+	if (data.cluster?.url) {
+		header += `\nCampaign page: ${data.cluster.url} (see get_campaign with campaign_id ${data.cluster.id} for full detail).`;
+	}
 
 	return textContent(`${header}\n\n\n${JSON.stringify(data, null, 2)}`);
+}
+
+// Implements the get_campaigns tool: lists live correlation clusters (possible
+// campaigns / suspected clusters) from the /api/v1/campaigns index.
+async function toolCampaigns(args: Record<string, unknown>) {
+	const limit = clampInt(args.limit, 1, 50, 10);
+	const brand = args.brand ? String(args.brand).trim().toLowerCase() : "";
+	const activeOnly = args.active_only === true;
+
+	const params = new URLSearchParams({ limit: String(limit) });
+	if (brand) params.set("brand", brand);
+	if (activeOnly) params.set("status", "active");
+	const r = await fetch(`${API_BASE}/api/v1/campaigns?${params}`, {
+		headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+	});
+	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
+	const data = (await r.json()) as {
+		count: number;
+		algorithm_version?: string | null;
+		generated_at?: string | null;
+		results: Array<{
+			id: number;
+			size: number;
+			active_count: number;
+			brands: string[];
+			confidence: string;
+			first_seen: string | null;
+			last_activity: string | null;
+			top_evidence: { type: string; coverage: string } | null;
+			url: string;
+		}>;
+	};
+
+	const scopeNote = `${brand ? ` for brand "${brand}"` : ""}${activeOnly ? " (active only)" : ""}`;
+
+	if (data.count === 0) {
+		return textContent(`No possible campaigns / suspected clusters found${scopeNote}.`);
+	}
+
+	const blocks = data.results.map((c) =>
+		[
+			`#${c.id} - ${c.confidence} (${c.size} indicators, ${c.active_count} active)`,
+			`Brands: ${c.brands.join(", ") || "unknown"}`,
+			`First seen: ${c.first_seen ?? "unknown"} | Last activity: ${c.last_activity ?? "unknown"}`,
+			c.top_evidence ? `Top evidence: ${c.top_evidence.type} (${c.top_evidence.coverage})` : "Top evidence: none yet",
+			`Campaign page: ${c.url}`,
+		].join("\n"),
+	);
+
+	return textContent(
+		`${data.count} possible campaign(s) / suspected cluster(s)${scopeNote}:\n\n` +
+			blocks.join("\n\n") +
+			`\n\nAlgorithm: ${data.algorithm_version ?? "unknown"} | Generated at: ${data.generated_at ?? "unknown"}\n` +
+			`These are shared-infrastructure/content links, not an attribution claim.`,
+	);
+}
+
+// Implements the get_campaign tool: full detail (evidence breakdown + every
+// member) for a single possible campaign / suspected cluster.
+async function toolCampaign(args: Record<string, unknown>) {
+	const idRaw = args.campaign_id;
+	const campaignId = Number(idRaw);
+	if (idRaw === undefined || idRaw === null || idRaw === "" || !Number.isFinite(campaignId) || !Number.isInteger(campaignId)) {
+		throw { code: ERR.INVALID_PARAMS, message: "'campaign_id' must be an integer" };
+	}
+
+	const r = await fetch(`${API_BASE}/api/v1/campaigns/${campaignId}`, {
+		headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+	});
+	if (r.status === 404) {
+		const data = (await r.json().catch(() => ({}))) as { error?: string; list_url?: string };
+		throw {
+			code: ERR.INVALID_PARAMS,
+			message: `${data.error ?? "Unknown campaign id"}. Use get_campaigns to see the current list of valid campaign ids.`,
+		};
+	}
+	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
+	const data = (await r.json()) as {
+		id: number;
+		size: number;
+		active_count: number;
+		brands: string[];
+		confidence: string;
+		first_seen: string | null;
+		last_activity: string | null;
+		algorithm_version?: string | null;
+		generated_at?: string | null;
+		evidence_summary: Array<{ type: string; value: string | null; members_matching: number }>;
+		members: Array<{
+			uuid: string;
+			domain: string;
+			company: string;
+			status: "active" | "offline";
+			relationship_score: number | null;
+			detail_url: string | null;
+		}>;
+	};
+
+	const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}...` : s);
+
+	const header = `Campaign #${data.id} - ${data.confidence} - ${data.active_count > 0 ? "ACTIVE" : "INACTIVE"}`;
+	const stats =
+		`${data.size} indicators, ${data.active_count} active | Brands: ${data.brands.join(", ") || "unknown"} | ` +
+		`First seen: ${data.first_seen ?? "unknown"} | Last activity: ${data.last_activity ?? "unknown"}`;
+
+	const evidenceLines = data.evidence_summary.length
+		? data.evidence_summary
+				.map((e) => `${e.members_matching}/${data.size} members - ${e.type}: ${truncate(String(e.value ?? "unknown"), 80)}`)
+				.join("\n")
+		: "No shared evidence signals recorded yet.";
+
+	const memberLines = data.members.length
+		? data.members
+				.map((m) => `${m.domain} | ${m.company} | ${m.status.toUpperCase()} | score=${m.relationship_score ?? "n/a"} | ${m.detail_url ?? "no detail url"}`)
+				.join("\n")
+		: "No members listed.";
+
+	const exportBase = `${API_BASE}/api/v1/campaigns/${data.id}/export`;
+	const exportLines = [`JSON: ${exportBase}?format=json`, `CSV: ${exportBase}?format=csv`, `TXT: ${exportBase}?format=txt`].join("\n");
+
+	return textContent(
+		`${header}\n${stats}\n\n` +
+			`Evidence summary:\n${evidenceLines}\n\n` +
+			`Members (${data.members.length}):\n${memberLines}\n\n` +
+			`Export:\n${exportLines}\n\n` +
+			`Algorithm: ${data.algorithm_version ?? "unknown"} | Generated at: ${data.generated_at ?? "unknown"}\n` +
+			`These are shared-infrastructure/content links, not an attribution claim.`,
+	);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

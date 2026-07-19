@@ -92,22 +92,24 @@ await test("GET returns human-readable service card", async () => {
 	const j = await r.json();
 	assert(j.service === "phishunt-mcp", "wrong service name");
 	assert(Array.isArray(j.tools), "tools array missing");
-	assert(j.tools.length === 8, `expected 8 tools, got ${j.tools.length}`);
+	assert(j.tools.length === 10, `expected 10 tools, got ${j.tools.length}`);
 });
 
 console.log("\n## Tools listing");
 
-await test("tools/list returns 8 tools with proper schemas", async () => {
+await test("tools/list returns 10 tools with proper schemas", async () => {
 	const r = await rpc("tools/list", {});
 	assert(r.body.result?.tools, "no tools in result");
 	const tools = r.body.result.tools;
-	assert(tools.length === 8, `expected 8 tools, got ${tools.length}`);
+	assert(tools.length === 10, `expected 10 tools, got ${tools.length}`);
 	const names = tools.map((t) => t.name).sort();
 	assert(
 		JSON.stringify(names) === JSON.stringify([
 			"analyze_url",
 			"check_domain",
 			"get_brand_metadata",
+			"get_campaign",
+			"get_campaigns",
 			"get_cert_metadata",
 			"get_recent_detections",
 			"get_related_infrastructure",
@@ -305,6 +307,75 @@ await test("get_related_infrastructure returns correlation text or 'not in feed'
 await test("get_related_infrastructure requires 'domain' param", async () => {
 	const r = await rpc("tools/call", { name: "get_related_infrastructure", arguments: {} });
 	assert(r.body.error, "expected error for missing domain");
+	assert(r.body.error.code === -32602, `expected INVALID_PARAMS, got ${r.body.error.code}`);
+});
+
+console.log("\n## Tool: get_campaigns");
+
+await test("get_campaigns returns a list with disclaimer + algorithm/generated_at footer", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_campaigns",
+		arguments: { limit: 3 },
+	});
+	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	assert(
+		/not an attribution claim/i.test(text) || /No possible campaigns/.test(text),
+		`missing disclaimer or empty-result text: ${text.slice(0, 200)}`,
+	);
+	assert(!/\bactor\b|\bgroup\b|\boperator\b/i.test(text), `should never use actor/group/operator language: ${text.slice(0, 300)}`);
+});
+
+await test("get_campaigns with brand + active_only filters returns content (possibly empty)", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_campaigns",
+		arguments: { brand: "nonsense-brand-that-doesnt-exist-zzzz", active_only: true, limit: 2 },
+	});
+	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text.toLowerCase();
+	assert(text.includes("no possible campaigns"), `expected empty-result text, got: ${text.slice(0, 200)}`);
+});
+
+console.log("\n## Tool: get_campaign");
+
+await test("get_campaign for a real id returns evidence + members + export links", async () => {
+	const list = await rpc("tools/call", { name: "get_campaigns", arguments: { limit: 1 } });
+	const listText = list.body.result?.content?.[0]?.text ?? "";
+	const m = listText.match(/#(\d+)/);
+	assert(m, `get_campaigns returned no campaign to test get_campaign against: ${listText.slice(0, 200)}`);
+	const id = Number(m[1]);
+
+	const r = await rpc("tools/call", { name: "get_campaign", arguments: { campaign_id: id } });
+	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	assert(text.includes(`Campaign #${id}`), `missing campaign id header: ${text.slice(0, 200)}`);
+	assert(/ACTIVE|INACTIVE/.test(text), `missing ACTIVE/INACTIVE marker: ${text.slice(0, 200)}`);
+	assert(/export\?format=json/.test(text), `missing export links: ${text.slice(0, 300)}`);
+	assert(!/\bactor\b|\bgroup\b|\boperator\b/i.test(text), `should never use actor/group/operator language: ${text.slice(0, 300)}`);
+});
+
+await test("get_campaign for unknown id returns INVALID_PARAMS with a get_campaigns pointer", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_campaign",
+		arguments: { campaign_id: 999999999 },
+	});
+	assert(r.body.error, `expected error, got: ${JSON.stringify(r.body.result)}`);
+	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
+	assert(/get_campaigns/.test(r.body.error.message), `expected pointer to get_campaigns: ${r.body.error.message}`);
+});
+
+await test("get_campaign requires 'campaign_id' param", async () => {
+	const r = await rpc("tools/call", { name: "get_campaign", arguments: {} });
+	assert(r.body.error, "expected error for missing campaign_id");
+	assert(r.body.error.code === -32602, `expected INVALID_PARAMS, got ${r.body.error.code}`);
+});
+
+await test("get_campaign rejects a non-numeric campaign_id", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_campaign",
+		arguments: { campaign_id: "not-a-number" },
+	});
+	assert(r.body.error, "expected error for non-numeric campaign_id");
 	assert(r.body.error.code === -32602, `expected INVALID_PARAMS, got ${r.body.error.code}`);
 });
 
