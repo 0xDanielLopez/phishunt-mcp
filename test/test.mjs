@@ -338,17 +338,21 @@ await test("get_campaigns with brand + active_only filters returns content (poss
 
 console.log("\n## Tool: get_campaign");
 
-await test("get_campaign for a real id returns evidence + members + export links", async () => {
+await test("get_campaign for a real key returns evidence + members + export links", async () => {
 	const list = await rpc("tools/call", { name: "get_campaigns", arguments: { limit: 1 } });
 	const listText = list.body.result?.content?.[0]?.text ?? "";
-	const m = listText.match(/#(\d+)/);
-	assert(m, `get_campaigns returned no campaign to test get_campaign against: ${listText.slice(0, 200)}`);
-	const id = Number(m[1]);
+	// Campaigns are addressed by their STABLE KEY (hex), not by the numeric
+	// cluster id, which the correlation builder reissues on every daily
+	// rebuild - a numeric id scraped today stops resolving tomorrow.
+	const m = listText.match(/#([a-f0-9]{6,40})\b/);
+	assert(m, `get_campaigns returned no campaign key to test get_campaign against: ${listText.slice(0, 200)}`);
+	const key = m[1];
 
-	const r = await rpc("tools/call", { name: "get_campaign", arguments: { campaign_id: id } });
+	const r = await rpc("tools/call", { name: "get_campaign", arguments: { campaign_id: key } });
 	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
 	const text = r.body.result.content[0].text;
-	assert(text.includes(`Campaign #${id}`), `missing campaign id header: ${text.slice(0, 200)}`);
+	assert(text.includes(`Campaign #${key}`), `missing campaign key header: ${text.slice(0, 200)}`);
+	assert(text.includes(`/campaigns/${key}/export`), `export links should use the stable key: ${text.slice(0, 400)}`);
 	assert(/ACTIVE|INACTIVE/.test(text), `missing ACTIVE/INACTIVE marker: ${text.slice(0, 200)}`);
 	assert(/export\?format=json/.test(text), `missing export links: ${text.slice(0, 300)}`);
 	assert(!/\bactor\b|\bgroup\b|\boperator\b/i.test(text), `should never use actor/group/operator language: ${text.slice(0, 300)}`);
