@@ -248,8 +248,9 @@ const TOOLS = [
 			type: "object",
 			properties: {
 				campaign_id: {
-					type: "number",
-					description: "Campaign (cluster) id, from the 'id' field of get_campaigns results.",
+					type: "string",
+					description:
+						"Stable campaign key from get_campaigns (preferred, e.g. '0c1b79ab9b24'), or a legacy numeric campaign id.",
 				},
 			},
 			required: ["campaign_id"],
@@ -457,7 +458,7 @@ async function toolRelatedInfra(args: Record<string, unknown>) {
 		domain: string;
 		algorithm_version?: string;
 		generated_at?: string;
-		cluster: { id: string | number; size: number; url?: string } | null;
+		cluster: { id: string | number; key?: string; size: number; url?: string } | null;
 		count: number;
 		results: unknown[];
 	};
@@ -470,11 +471,11 @@ async function toolRelatedInfra(args: Record<string, unknown>) {
 	}
 	let header = `Related infrastructure for "${resolvedDomain}" (${data.count} related indicator(s)`;
 	if (data.cluster) {
-		header += `, part of a possible campaign / suspected cluster #${data.cluster.id} with ${data.cluster.size} indicators`;
+		header += `, part of a possible campaign / suspected cluster #${data.cluster.key ?? data.cluster.id} with ${data.cluster.size} indicators`;
 	}
 	header += `). These are shared-infrastructure/content links, not an attribution claim.`;
 	if (data.cluster?.url) {
-		header += `\nCampaign page: ${data.cluster.url} (see get_campaign with campaign_id ${data.cluster.id} for full detail).`;
+		header += `\nCampaign page: ${data.cluster.url} (see get_campaign with campaign_id ${data.cluster.key ?? data.cluster.id} for full detail).`;
 	}
 
 	return textContent(`${header}\n\n\n${JSON.stringify(data, null, 2)}`);
@@ -500,6 +501,7 @@ async function toolCampaigns(args: Record<string, unknown>) {
 		generated_at?: string | null;
 		results: Array<{
 			id: number;
+			key?: string;
 			size: number;
 			active_count: number;
 			brands: string[];
@@ -519,7 +521,7 @@ async function toolCampaigns(args: Record<string, unknown>) {
 
 	const blocks = data.results.map((c) =>
 		[
-			`#${c.id} - ${c.confidence} (${c.size} indicators, ${c.active_count} active)`,
+			`#${c.key ?? c.id} - ${c.confidence} (${c.size} indicators, ${c.active_count} active)`,
 			`Brands: ${c.brands.join(", ") || "unknown"}`,
 			`First seen: ${c.first_seen ?? "unknown"} | Last activity: ${c.last_activity ?? "unknown"}`,
 			c.top_evidence ? `Top evidence: ${c.top_evidence.type} (${c.top_evidence.coverage})` : "Top evidence: none yet",
@@ -539,12 +541,12 @@ async function toolCampaigns(args: Record<string, unknown>) {
 // member) for a single possible campaign / suspected cluster.
 async function toolCampaign(args: Record<string, unknown>) {
 	const idRaw = args.campaign_id;
-	const campaignId = Number(idRaw);
-	if (idRaw === undefined || idRaw === null || idRaw === "" || !Number.isFinite(campaignId) || !Number.isInteger(campaignId)) {
-		throw { code: ERR.INVALID_PARAMS, message: "'campaign_id' must be an integer" };
+	const campaignId = typeof idRaw === "string" ? idRaw.trim() : idRaw !== undefined && idRaw !== null ? String(idRaw) : "";
+	if (!campaignId || !/^[a-zA-Z0-9]{1,40}$/.test(campaignId)) {
+		throw { code: ERR.INVALID_PARAMS, message: "'campaign_id' must be a campaign key or numeric id (see get_campaigns)" };
 	}
 
-	const r = await fetch(`${API_BASE}/api/v1/campaigns/${campaignId}`, {
+	const r = await fetch(`${API_BASE}/api/v1/campaigns/${encodeURIComponent(campaignId)}`, {
 		headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
 	});
 	if (r.status === 404) {
@@ -557,6 +559,7 @@ async function toolCampaign(args: Record<string, unknown>) {
 	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
 	const data = (await r.json()) as {
 		id: number;
+		key?: string;
 		size: number;
 		active_count: number;
 		brands: string[];
@@ -577,8 +580,9 @@ async function toolCampaign(args: Record<string, unknown>) {
 	};
 
 	const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}...` : s);
+	const campaignKey = String(data.key ?? data.id);
 
-	const header = `Campaign #${data.id} - ${data.confidence} - ${data.active_count > 0 ? "ACTIVE" : "INACTIVE"}`;
+	const header = `Campaign #${campaignKey} - ${data.confidence} - ${data.active_count > 0 ? "ACTIVE" : "INACTIVE"}`;
 	const stats =
 		`${data.size} indicators, ${data.active_count} active | Brands: ${data.brands.join(", ") || "unknown"} | ` +
 		`First seen: ${data.first_seen ?? "unknown"} | Last activity: ${data.last_activity ?? "unknown"}`;
@@ -595,7 +599,7 @@ async function toolCampaign(args: Record<string, unknown>) {
 				.join("\n")
 		: "No members listed.";
 
-	const exportBase = `${API_BASE}/api/v1/campaigns/${data.id}/export`;
+	const exportBase = `${API_BASE}/api/v1/campaigns/${encodeURIComponent(campaignKey)}/export`;
 	const exportLines = [`JSON: ${exportBase}?format=json`, `CSV: ${exportBase}?format=csv`, `TXT: ${exportBase}?format=txt`].join("\n");
 
 	return textContent(
