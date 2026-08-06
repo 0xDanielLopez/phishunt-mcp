@@ -81,14 +81,15 @@ await test("server advertises tools capability", async () => {
 console.log("\n## Tool invocation via SDK");
 
 let tools;
-await test("client.listTools() returns 10 tools", async () => {
+await test("client.listTools() returns 11 tools", async () => {
 	const r = await client.listTools();
 	tools = r.tools;
-	assert(tools.length === 10, `expected 10, got ${tools.length}`);
+	assert(tools.length === 11, `expected 11, got ${tools.length}`);
 	const names = tools.map((t) => t.name).sort();
 	assert(
 		JSON.stringify(names) === JSON.stringify([
 			"analyze_url",
+			"analyze_url_deep",
 			"check_domain",
 			"get_brand_metadata",
 			"get_campaign",
@@ -172,6 +173,38 @@ await test("client.callTool('analyze_url') returns live_analysis JSON", async ()
 	const data = JSON.parse(r.content[0].text);
 	assert(data && typeof data === "object" && "live_analysis" in data, "expected 'live_analysis' key");
 });
+
+await test("client.callTool('analyze_url_deep') with missing url throws (no network touched)", async () => {
+	let errored = false;
+	try {
+		await client.callTool({ name: "analyze_url_deep", arguments: {} });
+	} catch (e) {
+		errored = true;
+		assert(String(e).match(/-32602|url.*required/i), `wrong error message: ${e}`);
+	}
+	assert(errored, "expected error for missing url");
+});
+
+if (!IS_PROD) {
+	// Local `wrangler dev` has no DEEP_TOKEN secret configured by default --
+	// exercises the "fails clean without calling the backend" path
+	// deterministically. Skipped against prod: whether mcp.phishunt.io has
+	// DEEP_TOKEN configured is unknown from here, and if it does, this would
+	// trigger a REAL deep analysis (5-15s, consumes the shared 50/day budget).
+	await test("client.callTool('analyze_url_deep') fails clean when DEEP_TOKEN is unset (local dev)", async () => {
+		let errored = false;
+		try {
+			await client.callTool({
+				name: "analyze_url_deep",
+				arguments: { url: "https://example-test-domain-phishunt.com" },
+			});
+		} catch (e) {
+			errored = true;
+			assert(String(e).match(/DEEP_TOKEN/), `expected a DEEP_TOKEN mention: ${e}`);
+		}
+		assert(errored, "expected error when DEEP_TOKEN is not configured");
+	});
+}
 
 // ── Error cases via SDK ────────────────────────────────────────────────────
 console.log("\n## SDK error handling");

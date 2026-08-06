@@ -92,20 +92,21 @@ await test("GET returns human-readable service card", async () => {
 	const j = await r.json();
 	assert(j.service === "phishunt-mcp", "wrong service name");
 	assert(Array.isArray(j.tools), "tools array missing");
-	assert(j.tools.length === 10, `expected 10 tools, got ${j.tools.length}`);
+	assert(j.tools.length === 11, `expected 11 tools, got ${j.tools.length}`);
 });
 
 console.log("\n## Tools listing");
 
-await test("tools/list returns 10 tools with proper schemas", async () => {
+await test("tools/list returns 11 tools with proper schemas", async () => {
 	const r = await rpc("tools/list", {});
 	assert(r.body.result?.tools, "no tools in result");
 	const tools = r.body.result.tools;
-	assert(tools.length === 10, `expected 10 tools, got ${tools.length}`);
+	assert(tools.length === 11, `expected 11 tools, got ${tools.length}`);
 	const names = tools.map((t) => t.name).sort();
 	assert(
 		JSON.stringify(names) === JSON.stringify([
 			"analyze_url",
+			"analyze_url_deep",
 			"check_domain",
 			"get_brand_metadata",
 			"get_campaign",
@@ -285,6 +286,36 @@ await test("analyze_url with unsupported scheme returns INVALID_PARAMS", async (
 	assert(r.body.error, `expected error for unsupported scheme, got: ${JSON.stringify(r.body.result)}`);
 	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
 });
+
+console.log("\n## Tool: analyze_url_deep");
+
+// analyze_url_deep is the token-gated ACTIVE sibling of analyze_url. Its
+// param validation runs before the DEEP_TOKEN check and before any network
+// call, so this is safe to run in every environment.
+await test("analyze_url_deep requires 'url' param (no network touched)", async () => {
+	const r = await rpc("tools/call", { name: "analyze_url_deep", arguments: {} });
+	assert(r.body.error, "expected error for missing url");
+	assert(r.body.error.code === -32602, `expected INVALID_PARAMS, got ${r.body.error.code}`);
+});
+
+if (!IS_PROD) {
+	// Local `wrangler dev` has no DEEP_TOKEN secret configured by default (no
+	// .dev.vars checked into this repo), so this exercises the "fails clean
+	// without ever calling the backend" path deterministically. Skipped
+	// against prod: whether mcp.phishunt.io has DEEP_TOKEN configured is
+	// unknown from here, and if it does, this call would trigger a REAL deep
+	// analysis against the live backend (5-15s, consumes the shared
+	// 50/day production budget) -- not something a test suite should risk.
+	await test("analyze_url_deep fails clean when DEEP_TOKEN is unset (local dev)", async () => {
+		const r = await rpc("tools/call", {
+			name: "analyze_url_deep",
+			arguments: { url: "https://example-test-domain-phishunt.com" },
+		});
+		assert(r.body.error, `expected error, got result: ${JSON.stringify(r.body.result)}`);
+		assert(r.body.error.code === -32603, `expected INTERNAL, got ${r.body.error.code}`);
+		assert(/DEEP_TOKEN/.test(r.body.error.message), `expected a DEEP_TOKEN mention: ${r.body.error.message}`);
+	});
+}
 
 console.log("\n## Tool: get_related_infrastructure");
 
