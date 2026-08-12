@@ -48,6 +48,13 @@ function assert(cond, msg) {
 	if (!cond) throw new Error(msg);
 }
 
+// Registrar legal names legitimately contain "Group"/"LLC"/etc (e.g. "Global
+// Domain Group LLC") - that's factual WHOIS metadata, not attribution
+// language, so it must not trip the actor/group/operator ban below.
+function stripRegistrarLines(text) {
+	return text.replace(/^.*same_registrar:.*$/gm, "");
+}
+
 async function test(name, fn) {
 	try {
 		await fn();
@@ -354,7 +361,7 @@ await test("get_campaigns returns a list with disclaimer + algorithm/generated_a
 		/not an attribution claim/i.test(text) || /No possible campaigns/.test(text),
 		`missing disclaimer or empty-result text: ${text.slice(0, 200)}`,
 	);
-	assert(!/\bactor\b|\bgroup\b|\boperator\b/i.test(text), `should never use actor/group/operator language: ${text.slice(0, 300)}`);
+	assert(!/\bactor\b|\bgroup\b|\boperator\b/i.test(stripRegistrarLines(text)), `should never use actor/group/operator language: ${text.slice(0, 300)}`);
 });
 
 await test("get_campaigns with brand + active_only filters returns content (possibly empty)", async () => {
@@ -386,7 +393,7 @@ await test("get_campaign for a real key returns evidence + members + export link
 	assert(text.includes(`/campaigns/${key}/export`), `export links should use the stable key: ${text.slice(0, 400)}`);
 	assert(/ACTIVE|INACTIVE/.test(text), `missing ACTIVE/INACTIVE marker: ${text.slice(0, 200)}`);
 	assert(/export\?format=json/.test(text), `missing export links: ${text.slice(0, 300)}`);
-	assert(!/\bactor\b|\bgroup\b|\boperator\b/i.test(text), `should never use actor/group/operator language: ${text.slice(0, 300)}`);
+	assert(!/\bactor\b|\bgroup\b|\boperator\b/i.test(stripRegistrarLines(text)), `should never use actor/group/operator language: ${text.slice(0, 300)}`);
 });
 
 await test("get_campaign for unknown id returns INVALID_PARAMS with a get_campaigns pointer", async () => {
