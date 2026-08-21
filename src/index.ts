@@ -259,7 +259,7 @@ const TOOLS = [
 				},
 				brand: {
 					type: "string",
-					description: "Filter to campaigns with at least one member targeting this brand slug (e.g. 'coinbase').",
+					description: "Filter to campaigns with at least one member targeting this brand slug (e.g. 'kraken').",
 				},
 				active_only: {
 					type: "boolean",
