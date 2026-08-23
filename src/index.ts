@@ -572,6 +572,17 @@ async function toolRelatedInfra(args: Record<string, unknown>) {
 	return textContent(`${header}\n\n\n${JSON.stringify(data, null, 2)}`);
 }
 
+// data_status (batch 3, phishunt-web): 'ok' | 'stale' | 'missing' - reports
+// whether the correlation sidecar rebuilt on schedule. A single shared
+// helper turns that into the one warning line get_campaigns/get_campaign
+// prepend when it isn't 'ok', so a caller can tell "genuinely zero/unknown
+// campaigns" apart from "the nightly rebuild didn't run".
+function dataStatusWarning(dataStatus: string | null | undefined): string {
+	if (!dataStatus || dataStatus === "ok") return "";
+	const detail = dataStatus === "stale" ? "temporarily stale - showing the last good snapshot" : "temporarily unavailable";
+	return `[warning] Correlation data is ${detail}.\n\n`;
+}
+
 // Implements the get_campaigns tool: lists live correlation clusters (possible
 // campaigns / suspected clusters) from the /api/v1/campaigns index.
 async function toolCampaigns(args: Record<string, unknown>) {
@@ -590,6 +601,7 @@ async function toolCampaigns(args: Record<string, unknown>) {
 		count: number;
 		algorithm_version?: string | null;
 		generated_at?: string | null;
+		data_status?: "ok" | "stale" | "missing";
 		results: Array<{
 			id: number;
 			key?: string;
@@ -604,10 +616,11 @@ async function toolCampaigns(args: Record<string, unknown>) {
 		}>;
 	};
 
+	const warning = dataStatusWarning(data.data_status);
 	const scopeNote = `${brand ? ` for brand "${brand}"` : ""}${activeOnly ? " (active only)" : ""}`;
 
 	if (data.count === 0) {
-		return textContent(`No possible campaigns / suspected clusters found${scopeNote}.`);
+		return textContent(`${warning}No possible campaigns / suspected clusters found${scopeNote}.`);
 	}
 
 	const blocks = data.results.map((c) =>
@@ -621,55 +634,57 @@ async function toolCampaigns(args: Record<string, unknown>) {
 	);
 
 	return textContent(
-		`${data.count} possible campaign(s) / suspected cluster(s)${scopeNote}:\n\n` +
+		warning +
+			`${data.count} possible campaign(s) / suspected cluster(s)${scopeNote}:\n\n` +
 			blocks.join("\n\n") +
 			`\n\nAlgorithm: ${data.algorithm_version ?? "unknown"} | Generated at: ${data.generated_at ?? "unknown"}\n` +
 			`These are shared-infrastructure/content links, not an attribution claim.`,
 	);
 }
 
-// Implements the get_campaign tool: full detail (evidence breakdown + every
-// member) for a single possible campaign / suspected cluster.
-async function toolCampaign(args: Record<string, unknown>) {
-	const idRaw = args.campaign_id;
-	const campaignId = typeof idRaw === "string" ? idRaw.trim() : idRaw !== undefined && idRaw !== null ? String(idRaw) : "";
-	if (!campaignId || !/^[a-zA-Z0-9]{1,40}$/.test(campaignId)) {
-		throw { code: ERR.INVALID_PARAMS, message: "'campaign_id' must be a campaign key or numeric id (see get_campaigns)" };
-	}
+type LiveCampaign = {
+	id: number;
+	key?: string;
+	size: number;
+	active_count: number;
+	brands: string[];
+	confidence: string;
+	first_seen: string | null;
+	last_activity: string | null;
+	algorithm_version?: string | null;
+	generated_at?: string | null;
+	evidence_summary: Array<{ type: string; value: string | null; members_matching: number }>;
+	members: Array<{
+		uuid: string;
+		domain: string;
+		company: string;
+		status: "active" | "offline";
+		relationship_score: number | null;
+		detail_url: string | null;
+	}>;
+};
 
-	const r = await fetch(`${API_BASE}/api/v1/campaigns/${encodeURIComponent(campaignId)}`, {
-		headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-	});
-	if (r.status === 404) {
-		const data = (await r.json().catch(() => ({}))) as { error?: string; list_url?: string };
-		throw {
-			code: ERR.INVALID_PARAMS,
-			message: `${data.error ?? "Unknown campaign id"}. Use get_campaigns to see the current list of valid campaign ids.`,
-		};
-	}
-	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
-	const data = (await r.json()) as {
-		id: number;
-		key?: string;
-		size: number;
-		active_count: number;
-		brands: string[];
-		confidence: string;
-		first_seen: string | null;
-		last_activity: string | null;
-		algorithm_version?: string | null;
-		generated_at?: string | null;
-		evidence_summary: Array<{ type: string; value: string | null; members_matching: number }>;
-		members: Array<{
-			uuid: string;
-			domain: string;
-			company: string;
-			status: "active" | "offline";
-			relationship_score: number | null;
-			detail_url: string | null;
-		}>;
-	};
+// The archived shape (phishunt-web batch 3): GET /api/v1/campaigns/{id} is
+// now a 200 with "state": "archived" for a key that is no longer LIVE but
+// whose history the correlation sidecar still retains - deliberately
+// thinner than LiveCampaign (no evidence_summary; members is the last
+// recorded snapshot only, no live enrichment). A 404 is now reserved for an
+// identifier the sidecar has never seen, a suppressed key, or "weak".
+type ArchivedCampaign = {
+	state: "archived";
+	key: string;
+	label: string | null;
+	confidence_score: number;
+	size: number | null;
+	first_tracked: string | null;
+	last_seen: string | null;
+	end_state: "dissolved" | "merged" | "split" | "unknown" | null;
+	successors: string[];
+	members: Array<{ domain: string; uuid: string; company: string }>;
+	url: string;
+};
 
+function formatLiveCampaign(data: LiveCampaign): string {
 	const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}...` : s);
 	const campaignKey = String(data.key ?? data.id);
 
@@ -693,14 +708,79 @@ async function toolCampaign(args: Record<string, unknown>) {
 	const exportBase = `${API_BASE}/api/v1/campaigns/${encodeURIComponent(campaignKey)}/export`;
 	const exportLines = [`JSON: ${exportBase}?format=json`, `CSV: ${exportBase}?format=csv`, `TXT: ${exportBase}?format=txt`].join("\n");
 
-	return textContent(
+	return (
 		`${header}\n${stats}\n\n` +
-			`Evidence summary:\n${evidenceLines}\n\n` +
-			`Members (${data.members.length}):\n${memberLines}\n\n` +
-			`Export:\n${exportLines}\n\n` +
-			`Algorithm: ${data.algorithm_version ?? "unknown"} | Generated at: ${data.generated_at ?? "unknown"}\n` +
-			`These are shared-infrastructure/content links, not an attribution claim.`,
+		`Evidence summary:\n${evidenceLines}\n\n` +
+		`Members (${data.members.length}):\n${memberLines}\n\n` +
+		`Export:\n${exportLines}\n\n` +
+		`Algorithm: ${data.algorithm_version ?? "unknown"} | Generated at: ${data.generated_at ?? "unknown"}\n` +
+		`These are shared-infrastructure/content links, not an attribution claim.`
 	);
+}
+
+function formatArchivedCampaign(data: ArchivedCampaign): string {
+	const pct = Math.round((data.confidence_score ?? 0) * 100);
+	const header = `Campaign #${data.key} - ${data.label ?? "unknown confidence"} - ARCHIVED (no longer live)`;
+	const stats =
+		`${data.size ?? data.members.length} indicators (last recorded state) | Confidence: ${pct}% | ` +
+		`First tracked: ${data.first_tracked ?? "unknown"} | Last seen: ${data.last_seen ?? "unknown"}`;
+
+	let endStateLine: string;
+	if (data.end_state === "dissolved") {
+		endStateLine = "Ended: its members dropped out of the active feed.";
+	} else if (data.end_state === "merged") {
+		endStateLine = data.successors.length
+			? `Ended: absorbed into ${data.successors.join(", ")}.`
+			: "Ended: absorbed into another cluster that is itself no longer live.";
+	} else if (data.end_state === "split") {
+		endStateLine = data.successors.length
+			? `Ended: split; continuing under ${data.successors.join(", ")}.`
+			: "Ended: split into other clusters that are themselves no longer live.";
+	} else {
+		endStateLine = "Ended: no transition record was retained for how it ended.";
+	}
+
+	const memberLines = data.members.length ? data.members.map((m) => `${m.domain} | ${m.company}`).join("\n") : "No member records retained.";
+
+	return (
+		`${header}\n${stats}\n${endStateLine}\n\n` +
+		`Last recorded members (${data.members.length}):\n${memberLines}\n\n` +
+		`Campaign page: ${data.url}\n` +
+		`Export (archived campaigns: JSON only): ${API_BASE}/api/v1/campaigns/${encodeURIComponent(data.key)}/export?format=json\n\n` +
+		`These are shared-infrastructure/content links, not an attribution claim.`
+	);
+}
+
+// Implements the get_campaign tool: full detail (evidence breakdown + every
+// member) for a single possible campaign / suspected cluster - live or,
+// since phishunt-web batch 3, archived (a key that is no longer live but
+// whose history is still retained; see ArchivedCampaign/formatArchivedCampaign).
+async function toolCampaign(args: Record<string, unknown>) {
+	const idRaw = args.campaign_id;
+	const campaignId = typeof idRaw === "string" ? idRaw.trim() : idRaw !== undefined && idRaw !== null ? String(idRaw) : "";
+	if (!campaignId || !/^[a-zA-Z0-9]{1,40}$/.test(campaignId)) {
+		throw { code: ERR.INVALID_PARAMS, message: "'campaign_id' must be a campaign key or numeric id (see get_campaigns)" };
+	}
+
+	const r = await fetch(`${API_BASE}/api/v1/campaigns/${encodeURIComponent(campaignId)}`, {
+		headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+	});
+	if (r.status === 404) {
+		const data = (await r.json().catch(() => ({}))) as { error?: string; list_url?: string };
+		throw {
+			code: ERR.INVALID_PARAMS,
+			message: `${data.error ?? "Unknown campaign id"}. Use get_campaigns to see the current list of valid campaign ids.`,
+		};
+	}
+	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
+	const raw = (await r.json()) as (LiveCampaign | ArchivedCampaign) & {
+		state?: "live" | "archived";
+		data_status?: "ok" | "stale" | "missing";
+	};
+
+	const warning = dataStatusWarning(raw.data_status);
+	const body = raw.state === "archived" ? formatArchivedCampaign(raw as ArchivedCampaign) : formatLiveCampaign(raw as LiveCampaign);
+	return textContent(warning + body);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
