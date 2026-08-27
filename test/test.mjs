@@ -133,6 +133,18 @@ await test("tools/list returns 11 tools with proper schemas", async () => {
 	}
 });
 
+await test("get_campaign declares an outputSchema (structured content, batch 4)", async () => {
+	const r = await rpc("tools/list", {});
+	const tool = r.body.result.tools.find((t) => t.name === "get_campaign");
+	assert(tool, "get_campaign not found in tools/list");
+	assert(tool.outputSchema?.type === "object", "get_campaign missing outputSchema.type === 'object'");
+	assert(Array.isArray(tool.outputSchema.oneOf) && tool.outputSchema.oneOf.length === 2, "expected a live/archived oneOf split");
+	// Other tools deliberately have no outputSchema yet - only get_campaign
+	// gained one in this batch.
+	const others = r.body.result.tools.filter((t) => t.name !== "get_campaign");
+	assert(others.every((t) => t.outputSchema === undefined), "unexpected outputSchema on a tool other than get_campaign");
+});
+
 console.log("\n## Tool: check_domain");
 
 await test("check_domain on a definitely-not-flagged domain returns 'not found'", async () => {
@@ -374,6 +386,31 @@ await test("get_campaigns with brand + active_only filters returns content (poss
 	assert(text.includes("no possible campaigns"), `expected empty-result text, got: ${text.slice(0, 200)}`);
 });
 
+await test("get_campaigns notes total vs shown when more campaigns exist than this call's limit", async () => {
+	// `total` is a phishunt-web batch-4 field this tool now reads off the
+	// upstream JSON - not yet live on phishunt.io at the time this MCP
+	// change was written (verify directly against the raw API, bypassing
+	// this tool's own formatting, so the test isn't circular). Skips
+	// gracefully pre-deploy rather than asserting behavior the upstream API
+	// cannot yet produce; meaningful once phishunt-web batch 4 ships.
+	const rawProbe = await doFetch("https://phishunt.io/api/v1/campaigns?limit=1");
+	const rawJson = await rawProbe.json().catch(() => ({}));
+	if (typeof rawJson.total !== "number") {
+		console.log("    (skipped: upstream /api/v1/campaigns has no 'total' yet - phishunt-web batch 4 not deployed)");
+		return;
+	}
+	if (rawJson.total < 2) {
+		console.log(`    (skipped: only ${rawJson.total} live campaign(s) right now, nothing to truncate)`);
+		return;
+	}
+	const r = await rpc("tools/call", { name: "get_campaigns", arguments: { limit: 1 } });
+	const text = r.body.result?.content?.[0]?.text ?? "";
+	assert(
+		/showing 1 of \d+ total matching/.test(text),
+		`expected a total-vs-shown truncation note: ${text.slice(0, 300)}`,
+	);
+});
+
 console.log("\n## Tool: get_campaign");
 
 await test("get_campaign for a real key returns evidence + members + export links", async () => {
@@ -394,6 +431,30 @@ await test("get_campaign for a real key returns evidence + members + export link
 	assert(/ACTIVE|INACTIVE/.test(text), `missing ACTIVE/INACTIVE marker: ${text.slice(0, 200)}`);
 	assert(/export\?format=json/.test(text), `missing export links: ${text.slice(0, 300)}`);
 	assert(!/\bactor\b|\bgroup\b|\boperator\b/i.test(stripRegistrarLines(text)), `should never use actor/group/operator language: ${text.slice(0, 300)}`);
+});
+
+await test("get_campaign result carries structuredContent (batch 4) with no deprecated numeric id", async () => {
+	const list = await rpc("tools/call", { name: "get_campaigns", arguments: { limit: 1 } });
+	const listText = list.body.result?.content?.[0]?.text ?? "";
+	const m = listText.match(/#([a-f0-9]{6,40})\b/);
+	assert(m, `get_campaigns returned no campaign key to test get_campaign against: ${listText.slice(0, 200)}`);
+	const key = m[1];
+
+	const r = await rpc("tools/call", { name: "get_campaign", arguments: { campaign_id: key } });
+	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+	const sc = r.body.result.structuredContent;
+	assert(sc && typeof sc === "object", `expected structuredContent object: ${JSON.stringify(r.body.result).slice(0, 300)}`);
+	assert(sc.key === key, `structuredContent.key mismatch: expected ${key}, got ${sc.key}`);
+	assert(Array.isArray(sc.members), "structuredContent missing members[]");
+	// `state` is a phishunt-web batch-3 field this tool passes through
+	// as-is - tolerate it being absent (pre-deploy prod shape) but never
+	// anything other than one of the two documented values when present.
+	assert(sc.state === undefined || sc.state === "live" || sc.state === "archived", `unexpected state: ${sc.state}`);
+	// This IS fully testable pre-deploy: the underlying HTTP API has always
+	// emitted a numeric `id` (long predating `key`), and this server strips
+	// it before it ever reaches structuredContent (batch 4 identity policy)
+	// - `key` is the only identity this server's output carries.
+	assert(!("id" in sc), `structuredContent must not carry the deprecated numeric id: ${JSON.stringify(sc).slice(0, 200)}`);
 });
 
 await test("get_campaign for unknown id returns INVALID_PARAMS with a get_campaigns pointer", async () => {
