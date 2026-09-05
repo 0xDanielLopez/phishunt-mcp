@@ -275,6 +275,119 @@ await test("get_recent_detections with invalid date returns INVALID_PARAMS error
 	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
 });
 
+console.log("\n## Tool: pivot filters (asn, org, registrar, cert, country, ip)");
+
+function parseResultsArray(text) {
+	const i = text.indexOf("[");
+	if (i === -1) return null;
+	return JSON.parse(text.slice(i));
+}
+
+await test("get_recent_detections with asn pivot narrows to matching rows", async () => {
+	const since90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+	const r0 = await rpc("tools/call", {
+		name: "get_recent_detections",
+		arguments: { since: since90, limit: 5 },
+	});
+	assert(r0.body.result?.content, `no content: ${JSON.stringify(r0.body)}`);
+	const data0 = parseResultsArray(r0.body.result.content[0].text);
+	if (!data0 || data0.length === 0) {
+		console.log("    (skip: unfiltered call returned 0 rows - live feed)");
+		return;
+	}
+	const asn = data0[0].asn;
+	if (!asn) {
+		console.log("    (skip: first row has no asn field)");
+		return;
+	}
+	const r1 = await rpc("tools/call", {
+		name: "get_recent_detections",
+		arguments: { since: since90, limit: 5, asn },
+	});
+	assert(r1.body.result?.content, `no content: ${JSON.stringify(r1.body)}`);
+	const text1 = r1.body.result.content[0].text;
+	const countMatch = text1.match(/^(\d+) detection/);
+	assert(countMatch, `expected '<N> detection(s)' prefix: ${text1.slice(0, 200)}`);
+	assert(Number(countMatch[1]) >= 1, `expected count >= 1, got ${countMatch[1]}`);
+	const data1 = parseResultsArray(text1) || [];
+	for (const row of data1) assert(row.asn === asn, `row asn ${row.asn} != ${asn}`);
+});
+
+await test("get_recent_detections with country pivot narrows to matching rows", async () => {
+	const since90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+	const r0 = await rpc("tools/call", {
+		name: "get_recent_detections",
+		arguments: { since: since90, limit: 5 },
+	});
+	assert(r0.body.result?.content, `no content: ${JSON.stringify(r0.body)}`);
+	const data0 = parseResultsArray(r0.body.result.content[0].text);
+	if (!data0 || data0.length === 0) {
+		console.log("    (skip: unfiltered call returned 0 rows - live feed)");
+		return;
+	}
+	const country = data0[0].country;
+	if (!country) {
+		console.log("    (skip: first row has no country field)");
+		return;
+	}
+	const r1 = await rpc("tools/call", {
+		name: "get_recent_detections",
+		arguments: { since: since90, limit: 5, country },
+	});
+	assert(r1.body.result?.content, `no content: ${JSON.stringify(r1.body)}`);
+	const text1 = r1.body.result.content[0].text;
+	const countMatch = text1.match(/^(\d+) detection/);
+	assert(countMatch, `expected '<N> detection(s)' prefix: ${text1.slice(0, 200)}`);
+	assert(Number(countMatch[1]) >= 1, `expected count >= 1, got ${countMatch[1]}`);
+	const data1 = parseResultsArray(text1) || [];
+	for (const row of data1) assert(row.country === country, `row country ${row.country} != ${country}`);
+});
+
+await test("list_brand_phishings with country pivot narrows to matching rows", async () => {
+	const r0 = await rpc("tools/call", {
+		name: "list_brand_phishings",
+		arguments: { brand: "microsoft", limit: 5 },
+	});
+	assert(r0.body.result?.content, `no content: ${JSON.stringify(r0.body)}`);
+	const data0 = parseResultsArray(r0.body.result.content[0].text);
+	if (!data0 || data0.length === 0) {
+		console.log("    (skip: unfiltered call returned 0 rows - live feed)");
+		return;
+	}
+	const country = data0[0].country;
+	if (!country) {
+		console.log("    (skip: first row has no country field)");
+		return;
+	}
+	const r1 = await rpc("tools/call", {
+		name: "list_brand_phishings",
+		arguments: { brand: "microsoft", limit: 5, country },
+	});
+	assert(r1.body.result?.content, `no content: ${JSON.stringify(r1.body)}`);
+	const data1 = parseResultsArray(r1.body.result.content[0].text) || [];
+	assert(data1.length >= 1, `expected >=1 row, got: ${r1.body.result.content[0].text.slice(0, 200)}`);
+	for (const row of data1) assert(row.country === country, `row country ${row.country} != ${country}`);
+});
+
+await test("get_recent_detections with ip over 200 chars returns INVALID_PARAMS error", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_recent_detections",
+		arguments: { since: "2026-01-01", ip: "x".repeat(201) },
+	});
+	assert(r.body.error, `expected error, got result: ${JSON.stringify(r.body.result)}`);
+	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
+});
+
+await test("get_recent_detections with asn='AS0' returns 0 results, not an error", async () => {
+	const r = await rpc("tools/call", {
+		name: "get_recent_detections",
+		arguments: { since: "2026-01-01", asn: "AS0" },
+	});
+	assert(r.body.result?.content, `expected result, got error: ${JSON.stringify(r.body.error)}`);
+	const text = r.body.result.content[0].text;
+	assert(text.startsWith("0 "), `expected zero-result text, got: ${text.slice(0, 100)}`);
+});
+
 console.log("\n## Tool: get_brand_metadata");
 
 await test("get_brand_metadata for 'amazon' returns curated note + active count", async () => {
