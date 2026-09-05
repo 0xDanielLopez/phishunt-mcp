@@ -14,7 +14,7 @@ suspicious domains, list phishings by targeted brand, and sync detection deltas.
 
 | Name | Purpose |
 |---|---|
-| `check_domain` | Is this domain/URL substring in the active phishunt feed? |
+| `check_domain` | Is this host (or a list of up to 20) in the active phishunt feed? Exact match; misses are checked against the archive. |
 | `list_brand_phishings` | List active phishings targeting a brand (e.g. `microsoft`). |
 | `get_recent_detections` | Delta sync: detections since an ISO date. |
 | `get_brand_metadata` | Curated brand metadata (display name, category, AI characterisation, active count). |

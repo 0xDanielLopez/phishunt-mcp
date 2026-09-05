@@ -163,6 +163,73 @@ await test("check_domain requires 'domain' param", async () => {
 	assert(r.body.error.code === -32602, `expected INVALID_PARAMS, got ${r.body.error.code}`);
 });
 
+// feed.json is not rate-limited, so this plain fetch (outside doFetch's
+// throttle/rpc machinery) is free to run once, up front, to source a real
+// live domain and a real apex suffix for the host-exact-match tests below.
+const liveFeedRows = await (await fetch("https://phishunt.io/feed.json")).json();
+let live = liveFeedRows[0]?.domain;
+let suffix = live ? live.split(".").slice(1).join(".") : "";
+if (!suffix || suffix.split(".").length < 2) {
+	const alt = liveFeedRows.find((row) => String(row.domain || "").split(".").length >= 3);
+	assert(alt, "no feed row has a domain with >= 3 labels to test apex-suffix stripping");
+	live = alt.domain;
+	suffix = live.split(".").slice(1).join(".");
+}
+
+await test("check_domain: a live feed domain returns LISTED (exact host match)", async () => {
+	const r = await rpc("tools/call", { name: "check_domain", arguments: { domain: live } });
+	assert(r.body.result, `no result: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	assert(text.includes("LISTED"), `expected LISTED: ${text.slice(0, 300)}`);
+});
+
+await test("check_domain: apex suffix of a listed subdomain is not found, but lists hosts under it", async () => {
+	const r = await rpc("tools/call", { name: "check_domain", arguments: { domain: suffix } });
+	assert(r.body.result, `no result: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	assert(text.includes("not found"), `expected 'not found': ${text.slice(0, 300)}`);
+	assert(text.includes("host(s) under it"), `expected 'host(s) under it': ${text.slice(0, 300)}`);
+
+	const rf = await rpc("tools/call", { name: "check_domain", arguments: { domain: suffix, fuzzy: true } });
+	assert(rf.body.result, `no result: ${JSON.stringify(rf.body)}`);
+	const textFuzzy = rf.body.result.content[0].text;
+	assert(textFuzzy.includes("FUZZY"), `expected FUZZY: ${textFuzzy.slice(0, 300)}`);
+});
+
+await test("check_domain: array input returns one line per host, in order, and caps at 20", async () => {
+	const r = await rpc("tools/call", {
+		name: "check_domain",
+		arguments: { domain: [live, "definitely-not-a-phishing-example-zzzz.com", "www." + live] },
+	});
+	assert(r.body.result, `no result: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	const hostLines = text.split("\n").filter((line) => line.startsWith('"'));
+	assert(hostLines.length === 3, `expected 3 host lines, got ${hostLines.length}: ${text.slice(0, 500)}`);
+	assert(hostLines[1].includes("not found"), `line 2 should be a miss: ${hostLines[1]}`);
+	assert(hostLines[2].includes("LISTED"), `line 3 (www. variant) should be LISTED: ${hostLines[2]}`);
+
+	const rBig = await rpc("tools/call", {
+		name: "check_domain",
+		arguments: { domain: Array.from({ length: 21 }, (_, i) => "h" + i + ".example") },
+	});
+	assert(rBig.body.error, "expected error for a 21-item array");
+	assert(rBig.body.error.code === -32602, `expected INVALID_PARAMS, got ${rBig.body.error.code}`);
+});
+
+await test("check_domain: a never-flagged domain reports its archive-check outcome", async () => {
+	const r = await rpc("tools/call", {
+		name: "check_domain",
+		arguments: { domain: "definitely-not-a-phishing-example-zzzz.com" },
+	});
+	assert(r.body.result, `no result: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	assert(text.includes("not found"), `expected 'not found': ${text.slice(0, 300)}`);
+	assert(
+		/no record, active or archived|archive not checked/.test(text),
+		`expected archive outcome language: ${text.slice(0, 300)}`,
+	);
+});
+
 console.log("\n## Tool: list_brand_phishings");
 
 await test("list_brand_phishings for 'microsoft' returns content", async () => {
