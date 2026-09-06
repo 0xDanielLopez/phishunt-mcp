@@ -254,8 +254,8 @@ const TOOLS = [
 				},
 				limit: {
 					type: "number",
-					description: "Max results (1-1000). Default 50.",
-					default: 50,
+					description: "Max results (1-300). Default 20. Keep it small: each row is ~1.3 KB of JSON.",
+					default: 20,
 				},
 				...PIVOT_PROPERTIES,
 			},
@@ -275,8 +275,8 @@ const TOOLS = [
 				},
 				limit: {
 					type: "number",
-					description: "Max results (1-1000). Default 100.",
-					default: 100,
+					description: "Max results (1-300). Default 20. Keep it small: each row is ~1.3 KB of JSON.",
+					default: 20,
 				},
 				brand: {
 					type: "string",
@@ -332,8 +332,8 @@ const TOOLS = [
 				},
 				limit: {
 					type: "number",
-					description: "Max results (1-200). Default 50.",
-					default: 50,
+					description: "Max results (1-200). Default 20. Keep it small: each row is ~1.3 KB of JSON.",
+					default: 20,
 				},
 			},
 			required: ["query"],
@@ -462,6 +462,7 @@ type CheckDomainArchive = {
 		| "feed_cache_lag";
 	detail_url?: string;
 	first_seen?: string;
+	company?: string;
 };
 
 type CheckDomainHostResult = {
@@ -524,9 +525,13 @@ function formatCheckDomainHost(res: CheckDomainHostResult, fuzzy: boolean, singl
 		case "previously_active":
 			line += `; PREVIOUSLY DETECTED by phishunt on ${archive.first_seen ?? "an earlier date"} (no longer active): ${archive.detail_url ?? ""}`;
 			break;
-		case "in_new_registration_feed":
-			line += "; listed in the new-registration feed";
+		case "in_new_registration_feed": {
+			const company = archive.company ? ` for ${archive.company}` : "";
+			const firstSeen = archive.first_seen ? `; first seen ${archive.first_seen}` : "";
+			const detailUrl = archive.detail_url ? `: ${archive.detail_url}` : "";
+			line += `; listed in the new-registration feed (newly registered lookalike${company}, not a confirmed detection${firstSeen})${detailUrl}`;
 			break;
+		}
 		case "no_record":
 			line += "; no record, active or archived";
 			break;
@@ -637,7 +642,12 @@ async function toolCheckDomain(args: Record<string, unknown>) {
 						first_seen: known.record?.first_seen,
 					};
 				} else if (known?.in_new_registration_feed) {
-					res.archive = { state: "in_new_registration_feed" };
+					res.archive = {
+						state: "in_new_registration_feed",
+						detail_url: known.record?.detail_url,
+						first_seen: known.record?.first_seen,
+						company: known.record?.company,
+					};
 				} else {
 					res.archive = { state: "no_record" };
 				}
@@ -687,7 +697,7 @@ async function throwForUpstreamStatus(r: Response): Promise<never> {
 async function toolListBrand(args: Record<string, unknown>) {
 	const brand = String(args.brand ?? "").trim().toLowerCase();
 	if (!brand) throw { code: ERR.INVALID_PARAMS, message: "'brand' is required" };
-	const limit = clampInt(args.limit, 1, 1000, 50);
+	const limit = clampInt(args.limit, 1, 300, 20);
 
 	const params = new URLSearchParams({ company: brand, limit: String(limit), format: "json" });
 	applyPivotFilters(params, args);
@@ -703,7 +713,7 @@ async function toolListBrand(args: Record<string, unknown>) {
 	}
 	return textContent(
 		`${data.count} active phishing(s) targeting "${brand}":\n\n` +
-			JSON.stringify(data.results, null, 2),
+			JSON.stringify(data.results),
 	);
 }
 
@@ -717,7 +727,7 @@ async function toolRecent(args: Record<string, unknown>) {
 		new Date(since + "T00:00:00Z").toISOString().slice(0, 10) !== since) {
 		throw { code: ERR.INVALID_PARAMS, message: "'since' must be a valid ISO date (YYYY-MM-DD)" };
 	}
-	const limit = clampInt(args.limit, 1, 1000, 100);
+	const limit = clampInt(args.limit, 1, 300, 20);
 	const brand = args.brand ? String(args.brand).trim().toLowerCase() : "";
 
 	const params = new URLSearchParams({ since, limit: String(limit), format: "json" });
@@ -729,7 +739,7 @@ async function toolRecent(args: Record<string, unknown>) {
 	const data = (await r.json()) as { count: number; results: unknown[] };
 	return textContent(
 		`${data.count} detection(s) since ${since}${brand ? ` (brand="${brand}")` : ""}:\n\n` +
-			JSON.stringify(data.results, null, 2),
+			JSON.stringify(data.results),
 	);
 }
 
@@ -768,7 +778,7 @@ async function toolSearch(args: Record<string, unknown>) {
 	if (!query || query.length < 3) {
 		throw { code: ERR.INVALID_PARAMS, message: "'query' must be at least 3 characters" };
 	}
-	const limit = clampInt(args.limit, 1, 200, 50);
+	const limit = clampInt(args.limit, 1, 200, 20);
 	const params = new URLSearchParams({ q: query, limit: String(limit) });
 	const r = await fetch(`${API_BASE}/api/v1/search.json?${params}`, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
 	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
@@ -777,7 +787,7 @@ async function toolSearch(args: Record<string, unknown>) {
 		return textContent(`No active phishings match "${query}".`);
 	}
 	return textContent(
-		`${data.count} match(es) for "${query}":\n\n` + JSON.stringify(data.results, null, 2),
+		`${data.count} match(es) for "${query}":\n\n` + JSON.stringify(data.results),
 	);
 }
 
@@ -1312,6 +1322,21 @@ export default {
 
 		// GET at root: a human-readable note.
 		if (request.method === "GET") {
+			// Streamable HTTP clients (spec 2025-03-26+) probe GET for an SSE
+			// stream before falling back to POST-only. This server never opens
+			// SSE streams (stateless, JSON responses only), so answer with 405
+			// per spec rather than serving the JSON discovery body as text/event-stream.
+			if ((request.headers.get("Accept") ?? "").includes("text/event-stream")) {
+				return new Response(null, {
+					status: 405,
+					headers: {
+						Allow: "GET, POST",
+						"Access-Control-Allow-Origin": "*",
+						"X-Content-Type-Options": "nosniff",
+						"Cache-Control": "no-store",
+					},
+				});
+			}
 			const body = {
 				service: "phishunt-mcp",
 				protocol: "Model Context Protocol (MCP)",
@@ -1324,7 +1349,7 @@ export default {
 				source: "https://github.com/0xDanielLopez/phishunt-mcp",
 			};
 			return Response.json(body, {
-				headers: { "Cache-Control": "public, max-age=300", ...CORS_HEADERS },
+				headers: { "Cache-Control": "public, max-age=300", Vary: "Accept", ...CORS_HEADERS },
 			});
 		}
 

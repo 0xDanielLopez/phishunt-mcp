@@ -171,6 +171,14 @@ await test("tools/list returns 11 tools with proper schemas", async () => {
 	}
 });
 
+await test("get_recent_detections 'limit' description advertises the lowered default", async () => {
+	const r = await rpc("tools/list", {});
+	const tool = r.body.result.tools.find((t) => t.name === "get_recent_detections");
+	assert(tool, "get_recent_detections not found in tools/list");
+	const desc = tool.inputSchema.properties.limit.description;
+	assert(desc.includes("Default 20"), `expected 'Default 20' in limit description, got: "${desc}"`);
+});
+
 await test("get_campaign declares an outputSchema (structured content, batch 4)", async () => {
 	const r = await rpc("tools/list", {});
 	const tool = r.body.result.tools.find((t) => t.name === "get_campaign");
@@ -268,6 +276,39 @@ await test("check_domain: a never-flagged domain reports its archive-check outco
 	);
 });
 
+// The host is derived at run time from a brand's new-registration listing
+// page (the `class="ioc"` cells), never hardcoded: rows age out of that feed.
+// check_domain accepts a list and archive-checks up to 3 misses per call, so
+// three candidates are sent at once and at least one is expected to be
+// new-registration-only (a candidate that is ALSO in the active feed is a
+// plain hit and carries no archive line). Nothing here visits the hosts.
+await test("check_domain: a new-registration-only host reports the lookalike archive state, not a phishing verdict", async () => {
+	let hosts = [];
+	for (const brand of ["whatsapp", "microsoft", "paypal", "facebook"]) {
+		const page = await doFetch(`https://phishunt.io/newregistration/${brand}/`, { headers: { "User-Agent": "phishunt-mcp-tests" } });
+		if (page.status !== 200) continue;
+		const html = await page.text();
+		hosts = [...html.matchAll(/class="ioc">https?:\/\/([a-z0-9.-]+)/g)].map((m) => m[1]).slice(0, 3);
+		if (hosts.length) break;
+	}
+	if (!hosts.length) {
+		console.log("  (skipped: no new-registration rows found on the sampled brand pages)");
+		return;
+	}
+	const r = await rpc("tools/call", {
+		name: "check_domain",
+		arguments: { domain: hosts },
+	});
+	assert(r.body.result, `no result: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	if (!text.includes("new-registration feed")) {
+		console.log(`  (skipped: none of ${hosts.join(", ")} is new-registration-only right now)`);
+		return;
+	}
+	assert(text.includes("phishunt.io/newregistration/"), `expected a newregistration detail_url: ${text.slice(0, 400)}`);
+	assert(text.includes("not a confirmed detection"), `expected 'not a confirmed detection': ${text.slice(0, 400)}`);
+});
+
 console.log("\n## Tool: list_brand_phishings");
 
 await test("list_brand_phishings for 'microsoft' returns content", async () => {
@@ -311,6 +352,20 @@ await test("get_recent_detections with invalid date returns INVALID_PARAMS error
 	});
 	assert(r.body.error, `expected error, got result: ${JSON.stringify(r.body.result)}`);
 	assert(r.body.error.code === -32602, `expected -32602, got ${r.body.error.code}`);
+});
+
+// The default limit was lowered from 100 to 20 (batch: list-tool defaults)
+// after Claude Code silently truncated a 100-row / ~135 KB response at its
+// 25k-token tool-result cap. Guard against that regressing.
+await test("get_recent_detections with no limit (default) stays well under a client's 25k-token cap", async () => {
+	const since7d = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+	const r = await rpc("tools/call", {
+		name: "get_recent_detections",
+		arguments: { since: since7d },
+	});
+	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+	const text = r.body.result.content[0].text;
+	assert(text.length < 40000, `default-limit response too large: ${text.length} chars`);
 });
 
 console.log("\n## Tool: pivot filters (asn, org, registrar, cert, country, ip)");
@@ -838,6 +893,27 @@ await test("CORS preflight allows MCP-Protocol-Version header", async () => {
 	const allow = (r.headers.get("access-control-allow-headers") || "").toLowerCase();
 	assert(allow.includes("mcp-protocol-version"), `Allow-Headers missing MCP-Protocol-Version: "${allow}"`);
 	assert(r.headers.get("access-control-allow-origin") === "*", "missing ACAO on preflight");
+});
+
+await test("GET with Accept: text/event-stream returns 405 (Streamable HTTP conformance)", async () => {
+	const r = await doFetch(URL_ENDPOINT, {
+		method: "GET",
+		headers: { Accept: "text/event-stream" },
+	});
+	assert(r.status === 405, `expected 405, got ${r.status}`);
+	assert(r.headers.get("allow") === "GET, POST", `expected Allow: "GET, POST", got: "${r.headers.get("allow")}"`);
+});
+
+await test("GET with Accept: */* still returns the JSON discovery body, with Vary: Accept", async () => {
+	const r = await doFetch(URL_ENDPOINT, {
+		method: "GET",
+		headers: { Accept: "*/*" },
+	});
+	assert(r.status === 200, `expected 200, got ${r.status}`);
+	const ct = r.headers.get("content-type") || "";
+	assert(ct.includes("application/json"), `expected application/json content-type, got: "${ct}"`);
+	const vary = r.headers.get("vary") || "";
+	assert(vary.includes("Accept"), `expected Vary to include Accept, got: "${vary}"`);
 });
 
 // ── Summary ─────────────────────────────────────────────────────────────────
