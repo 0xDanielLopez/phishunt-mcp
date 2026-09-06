@@ -109,7 +109,26 @@ const CAMPAIGN_OUTPUT_SCHEMA = {
 			properties: {
 				state: { const: "live" },
 				key: { type: "string", description: "Stable campaign identifier." },
-				size: { type: "integer" },
+				size: {
+					type: "integer",
+					description:
+						"Number of distinct registrable domains (PSL, private section included). Sibling subdomains of one domain count once.",
+				},
+				host_count: { type: "integer", description: "Number of hostnames in the campaign (members.length)." },
+				domains: {
+					type: "array",
+					description: "Members grouped by registrable domain; size == domains.length.",
+					items: {
+						type: "object",
+						properties: {
+							domain: { type: "string" },
+							host_count: { type: "integer" },
+							active_count: { type: "integer" },
+							hosts: { type: "array", items: { type: "string" } },
+							uuids: { type: "array", items: { type: "string" } },
+						},
+					},
+				},
 				active_count: { type: "integer" },
 				brands: { type: "array", items: { type: "string" } },
 				confidence: { type: "string", enum: ["possible campaign", "suspected cluster"] },
@@ -138,6 +157,7 @@ const CAMPAIGN_OUTPUT_SCHEMA = {
 				label: { type: ["string", "null"] },
 				confidence_score: { type: "number" },
 				size: { type: ["integer", "null"] },
+				host_count: { type: ["integer", "null"] },
 				first_tracked: { type: ["string", "null"] },
 				last_seen: { type: ["string", "null"] },
 				end_state: { type: ["string", "null"], enum: ["dissolved", "merged", "split", "unknown", null] },
@@ -906,7 +926,7 @@ async function toolRelatedInfra(args: Record<string, unknown>) {
 	}
 	let header = `Related infrastructure for "${resolvedDomain}" (${data.count} related indicator(s)`;
 	if (data.cluster) {
-		header += `, part of a possible campaign / suspected cluster #${data.cluster.key} with ${data.cluster.size} indicators`;
+		header += `, part of a possible campaign / suspected cluster #${data.cluster.key} with ${data.cluster.size} domains`;
 	}
 	header += `). These are shared-infrastructure/content links, not an attribution claim.`;
 	if (data.cluster?.url) {
@@ -955,6 +975,7 @@ async function toolCampaigns(args: Record<string, unknown>) {
 		results: Array<{
 			key?: string;
 			size: number;
+			host_count?: number;
 			active_count: number;
 			brands: string[];
 			confidence: string;
@@ -974,7 +995,7 @@ async function toolCampaigns(args: Record<string, unknown>) {
 
 	const blocks = data.results.map((c) =>
 		[
-			`#${c.key} - ${c.confidence} (${c.size} indicators, ${c.active_count} active)`,
+			`#${c.key} - ${c.confidence} (${c.size} domains${typeof c.host_count === "number" ? ` (${c.host_count} hosts)` : ""}, ${c.active_count} active)`,
 			`Brands: ${c.brands.join(", ") || "unknown"}`,
 			`First seen: ${c.first_seen ?? "unknown"} | Last activity: ${c.last_activity ?? "unknown"}`,
 			c.top_evidence ? `Top evidence: ${c.top_evidence.type} (${c.top_evidence.coverage})` : "Top evidence: none yet",
@@ -1007,7 +1028,13 @@ type LiveCampaign = {
 	// ever use). `key` is always present for a live campaign, unlike the
 	// optional `id`-fallback shape this used to have.
 	key: string;
+	// Number of distinct registrable domains (PSL, private section included -
+	// sibling subdomains of one domain count once). host_count/domains are the
+	// hostname-level counterparts - both optional since the API may deploy
+	// this after this MCP server does.
 	size: number;
+	host_count?: number;
+	domains?: Array<{ domain: string; host_count: number; active_count: number; hosts: string[]; uuids: string[] }>;
 	active_count: number;
 	brands: string[];
 	confidence: string;
@@ -1019,6 +1046,7 @@ type LiveCampaign = {
 	members: Array<{
 		uuid: string;
 		domain: string;
+		registrable_domain?: string;
 		company: string;
 		status: "active" | "offline";
 		relationship_score: number | null;
@@ -1038,6 +1066,8 @@ type ArchivedCampaign = {
 	label: string | null;
 	confidence_score: number;
 	size: number | null;
+	// null for rows built before corr-1.3.0 (host_count/domains predate it).
+	host_count?: number | null;
 	first_tracked: string | null;
 	last_seen: string | null;
 	end_state: "dissolved" | "merged" | "split" | "unknown" | null;
@@ -1052,14 +1082,24 @@ function formatLiveCampaign(data: LiveCampaign): string {
 
 	const header = `Campaign #${campaignKey} - ${data.confidence} - ${data.active_count > 0 ? "ACTIVE" : "INACTIVE"}`;
 	const stats =
-		`${data.size} indicators, ${data.active_count} active | Brands: ${data.brands.join(", ") || "unknown"} | ` +
+		`${data.size} domain(s) (${data.host_count ?? data.members.length} hosts), ${data.active_count} active hosts | ` +
+		`Brands: ${data.brands.join(", ") || "unknown"} | ` +
 		`First seen: ${data.first_seen ?? "unknown"} | Last activity: ${data.last_activity ?? "unknown"}`;
 
 	const evidenceLines = data.evidence_summary.length
 		? data.evidence_summary
-				.map((e) => `${e.members_matching}/${data.size} members - ${e.type}: ${truncate(String(e.value ?? "unknown"), 80)}`)
+				.map((e) => `${e.members_matching}/${data.size} domains - ${e.type}: ${truncate(String(e.value ?? "unknown"), 80)}`)
 				.join("\n")
 		: "No shared evidence signals recorded yet.";
+
+	// domains (new, optional - falls back to nothing when the API hasn't
+	// deployed this field yet) groups members by registrable domain; only
+	// worth a dedicated block when at least one domain actually has multiple
+	// sibling hosts, otherwise it's a 1:1 restatement of the members list.
+	const domainsBlock =
+		data.domains && data.domains.some((d) => d.host_count > 1)
+			? `Domains:\n${data.domains.map((d) => `${d.domain} (${d.host_count} hosts, ${d.active_count} active)`).join("\n")}\n\n`
+			: "";
 
 	const memberLines = data.members.length
 		? data.members
@@ -1073,7 +1113,8 @@ function formatLiveCampaign(data: LiveCampaign): string {
 	return (
 		`${header}\n${stats}\n\n` +
 		`Evidence summary:\n${evidenceLines}\n\n` +
-		`Members (${data.members.length}):\n${memberLines}\n\n` +
+		domainsBlock +
+		`Members (${data.members.length} hosts across ${data.size} domains):\n${memberLines}\n\n` +
 		`Export:\n${exportLines}\n\n` +
 		`Algorithm: ${data.algorithm_version ?? "unknown"} | Generated at: ${data.generated_at ?? "unknown"}\n` +
 		`These are shared-infrastructure/content links, not an attribution claim.`
@@ -1083,8 +1124,9 @@ function formatLiveCampaign(data: LiveCampaign): string {
 function formatArchivedCampaign(data: ArchivedCampaign): string {
 	const pct = Math.round((data.confidence_score ?? 0) * 100);
 	const header = `Campaign #${data.key} - ${data.label ?? "unknown confidence"} - ARCHIVED (no longer live)`;
+	const hostCountPart = typeof data.host_count === "number" ? ` (${data.host_count} hosts)` : "";
 	const stats =
-		`${data.size ?? data.members.length} indicators (last recorded state) | Confidence: ${pct}% | ` +
+		`${data.size ?? data.members.length} domains${hostCountPart} (last recorded state) | Confidence: ${pct}% | ` +
 		`First tracked: ${data.first_tracked ?? "unknown"} | Last seen: ${data.last_seen ?? "unknown"}`;
 
 	let endStateLine: string;

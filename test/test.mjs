@@ -69,6 +69,44 @@ async function test(name, fn) {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
+console.log("## Schema (offline, source-level - no server needed)");
+
+// Pure unit check on CAMPAIGN_OUTPUT_SCHEMA's source text: campaign size is
+// becoming "number of distinct registrable domains" rather than "number of
+// hostnames", with host_count/domains added as new OPTIONAL fields (the API
+// may deploy this after the MCP server does). This runs without a worker -
+// CAMPAIGN_OUTPUT_SCHEMA isn't exported, so pull its object literal straight
+// out of src/index.ts and eval it, same as a JSON.parse of the schema.
+await test("CAMPAIGN_OUTPUT_SCHEMA declares host_count/domains, required[] unchanged", async () => {
+	const { readFileSync } = await import("node:fs");
+	const { fileURLToPath } = await import("node:url");
+	const srcPath = fileURLToPath(new URL("../src/index.ts", import.meta.url));
+	const srcText = readFileSync(srcPath, "utf8");
+	const m = srcText.match(/const CAMPAIGN_OUTPUT_SCHEMA = (\{[\s\S]*?\n\}) as const;/);
+	assert(m, "could not locate CAMPAIGN_OUTPUT_SCHEMA in src/index.ts");
+	const schema = new Function(`return (${m[1]});`)();
+
+	const live = schema.oneOf.find((s) => s.title === "LiveCampaign");
+	assert(live, "LiveCampaign not found in oneOf");
+	assert(live.properties.host_count?.type === "integer", "LiveCampaign missing host_count: integer");
+	assert(live.properties.domains?.type === "array", "LiveCampaign missing domains: array");
+	assert(
+		JSON.stringify(live.required) === JSON.stringify(["state", "key", "size", "members"]),
+		`LiveCampaign.required changed: ${JSON.stringify(live.required)}`,
+	);
+
+	const archived = schema.oneOf.find((s) => s.title === "ArchivedCampaign");
+	assert(archived, "ArchivedCampaign not found in oneOf");
+	assert(
+		JSON.stringify(archived.properties.host_count?.type) === JSON.stringify(["integer", "null"]),
+		`ArchivedCampaign missing host_count: ["integer","null"]`,
+	);
+	assert(
+		JSON.stringify(archived.required) === JSON.stringify(["state", "key", "members", "url"]),
+		`ArchivedCampaign.required changed: ${JSON.stringify(archived.required)}`,
+	);
+});
+
 console.log(`\nTarget: ${URL_ENDPOINT}\n`);
 
 console.log("## Protocol handshake");
