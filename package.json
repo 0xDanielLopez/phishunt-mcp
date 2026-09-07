@@ -11,9 +11,9 @@
     "test:sdk": "node test/sdk-client.mjs"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250101.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@cloudflare/workers-types": "^5.20260907.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "typescript": "^5.6.3",
-    "wrangler": "^4.107.1"
+    "wrangler": "^4.129.1"
   }
 }
