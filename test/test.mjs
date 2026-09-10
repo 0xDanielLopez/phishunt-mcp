@@ -213,14 +213,18 @@ await test("check_domain requires 'domain' param", async () => {
 // throttle/rpc machinery) is free to run once, up front, to source a real
 // live domain and a real apex suffix for the host-exact-match tests below.
 const liveFeedRows = await (await fetch("https://phishunt.io/feed.json")).json();
-let live = liveFeedRows[0]?.domain;
-let suffix = live ? live.split(".").slice(1).join(".") : "";
-if (!suffix || suffix.split(".").length < 2) {
-	const alt = liveFeedRows.find((row) => String(row.domain || "").split(".").length >= 3);
-	assert(alt, "no feed row has a domain with >= 3 labels to test apex-suffix stripping");
-	live = alt.domain;
-	suffix = live.split(".").slice(1).join(".");
-}
+// Pick the first row with >= 3 labels whose parent is NOT itself listed: the
+// apex-suffix test below asserts "not found" for the parent, and the feed does
+// list a host and its apex side by side at times (4 such pairs on 2026-09-10),
+// which made rows[0] a coin flip.
+const listedDomains = new Set(liveFeedRows.map((row) => String(row.domain || "")));
+const pick = liveFeedRows.find((row) => {
+	const parts = String(row.domain || "").split(".");
+	return parts.length >= 3 && !listedDomains.has(parts.slice(1).join("."));
+});
+assert(pick, "no feed row has a >= 3-label domain whose parent is not itself listed");
+const live = pick.domain;
+const suffix = live.split(".").slice(1).join(".");
 
 await test("check_domain: a live feed domain returns LISTED (exact host match)", async () => {
 	const r = await rpc("tools/call", { name: "check_domain", arguments: { domain: live } });
