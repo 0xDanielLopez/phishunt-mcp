@@ -684,9 +684,11 @@ await test("analyze_url output includes verdict, verdict_confidence and verdict_
 	}
 
 	const hname = "analyze_url history separates apex_prior_detections (medium+) from apex_candidates_seen (all rows) and reports scope";
-	if (data && data.history && !("apex_candidates_seen" in data.history)) {
+	if (!data || !data.history) {
+		skip(hname, "no analyze_url sample or no `history` object in it");
+	} else if (!("apex_candidates_seen" in data.history)) {
 		skip(hname, "no `history.apex_candidates_seen`: backend not deployed yet");
-	} else if (data && data.history) {
+	} else {
 		await test(hname, async () => {
 			const h = data.history;
 			assert(Number.isInteger(h.apex_candidates_seen) && h.apex_candidates_seen >= 0, `apex_candidates_seen must be an integer >= 0, got ${JSON.stringify(h.apex_candidates_seen)}`);
