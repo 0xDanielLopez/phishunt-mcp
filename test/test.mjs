@@ -3,6 +3,8 @@
 // Usage: MCP_URL=https://mcp.phishunt.io node test/test.mjs
 //        (or MCP_URL=http://localhost:8787 for local dev)
 
+import { ACTIVE_COVERAGE, PASSIVE_COVERAGE, probabilityProblems } from "./probability-contract.mjs";
+
 const URL_ENDPOINT = process.env.MCP_URL || "http://localhost:8787";
 
 // Against prod (mcp.phishunt.io) the Cloudflare rate-limit rule (>5 req/10s,
@@ -32,6 +34,7 @@ async function doFetch(url, opts) {
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 const failures = [];
 
 async function rpc(method, params, id = 1) {
@@ -65,6 +68,29 @@ async function test(name, fn) {
 		failed++;
 		failures.push({ name, error: e.message });
 	}
+}
+
+// A skipped test is neither a pass nor a failure: used for assertions that
+// depend on a backend deploy that may not have landed yet (this suite hits prod).
+function skip(name, reason) {
+	console.log(`  - ${name}\n      SKIPPED: ${reason}`);
+	skipped++;
+}
+
+// One analyze_url call shared by every test that needs a live sample, so the
+// prod run pays for a single throttled request instead of one per assertion.
+// The domain is a nonexistent one: analyze_url is passive and never contacts it.
+let analyzeSamplePromise;
+function getAnalyzeSample() {
+	analyzeSamplePromise ??= (async () => {
+		const r = await rpc("tools/call", {
+			name: "analyze_url",
+			arguments: { url: "https://example-test-domain-phishunt.com" },
+		});
+		assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
+		return JSON.parse(r.body.result.content[0].text);
+	})();
+	return analyzeSamplePromise;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -105,6 +131,73 @@ await test("CAMPAIGN_OUTPUT_SCHEMA declares host_count/domains, required[] uncha
 		JSON.stringify(archived.required) === JSON.stringify(["state", "key", "members", "url"]),
 		`ArchivedCampaign.required changed: ${JSON.stringify(archived.required)}`,
 	);
+});
+
+// Source-level check of the two analyze tool descriptions and the deep timeout.
+// Offline on purpose: descriptions live in src/index.ts, so this catches a
+// regression before any deploy and needs neither the Worker nor the backend.
+await test("analyze_url / analyze_url_deep descriptions document probability, render and the 80 s deep timeout", async () => {
+	const { readFileSync } = await import("node:fs");
+	const { fileURLToPath } = await import("node:url");
+	const srcText = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
+	const descOf = (tool) => {
+		const m = srcText.match(new RegExp(`name: "${tool}",\\s*description:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+		assert(m, `could not locate the ${tool} description in src/index.ts`);
+		return JSON.parse(`"${m[1]}"`);
+	};
+	const passive = descOf("analyze_url");
+	for (const needle of ["`verdict`", "`probability`", "relative_risk", "interval_80", "BY DESIGN", "NOT 'safe'", "analyze_url_deep", "Privacy:", "attacker-authored"]) {
+		assert(passive.includes(needle), `analyze_url description lost ${JSON.stringify(needle)}`);
+	}
+	const deep = descOf("analyze_url_deep");
+	for (const needle of ["RENDERS", "active_rendered", "active_no_render", "render.status", "10-40 seconds", "~70 seconds", "50 analyses/day", "single-flight", "Privacy:", "attacker-authored", "'not fully evaluated'"]) {
+		assert(deep.includes(needle), `analyze_url_deep description lost ${JSON.stringify(needle)}`);
+	}
+	assert(!/never renders|always come back unevaluated/i.test(deep), "analyze_url_deep description still says it never renders");
+	const t = srcText.match(/const DEEP_UPSTREAM_TIMEOUT_MS = ([\d_]+);/);
+	assert(t, "could not locate DEEP_UPSTREAM_TIMEOUT_MS in src/index.ts");
+	assert(Number(t[1].replaceAll("_", "")) === 80000, `DEEP_UPSTREAM_TIMEOUT_MS must be 80000 (backend 70 s, nginx 80 s, CF 100 s), got ${t[1]}`);
+});
+
+// Unit tests of the contract checker itself, so a bug in it cannot silently
+// make the live probability assertions vacuous.
+await test("probabilityProblems accepts a well-formed block and rejects broken ones (offline)", async () => {
+	const good = {
+		status: "ok",
+		p_malicious: 0.004,
+		percent: 0,
+		interval_80: [0.001, 0.012],
+		band: "very_unlikely",
+		relative_risk: 0.31,
+		coverage: "passive_url_only",
+		prior: 0.013,
+		evidence: [
+			{ class: "url_shape", value: "minimal", llr: -0.8, direction: "toward_benign" },
+			{ class: "gsb_flag", value: "0", llr: 0, direction: "neutral" },
+		],
+		not_evaluated: ["active_score", "active_score_rendered"],
+		model_version: "2026-09-28.2",
+		note: "URL-only estimate; the page was not fetched.",
+	};
+	const problems = probabilityProblems(good, { coverage: PASSIVE_COVERAGE });
+	assert(problems.length === 0, `good block rejected: ${problems.join("; ")}`);
+	assert(probabilityProblems({ status: "unavailable" }).length === 0, "status unavailable alone must be accepted");
+	assert(probabilityProblems(good, { coverage: ACTIVE_COVERAGE }).length === 1, "passive coverage must be rejected on an active-only check");
+	const broken = {
+		"wrong band": { ...good, p_malicious: 0.4, percent: 40, band: "unlikely" },
+		"percent mismatch": { ...good, percent: 33 },
+		"4 decimals": { ...good, p_malicious: 0.0041 },
+		"inverted interval": { ...good, interval_80: [0.5, 0.1] },
+		"interval out of range": { ...good, interval_80: [0, 1.2] },
+		"bad direction": { ...good, evidence: [{ class: "url_shape", value: "x", llr: 0, direction: "up" }] },
+		"missing llr": { ...good, evidence: [{ class: "url_shape", value: "x", direction: "neutral" }] },
+		"missing model_version": { ...good, model_version: "" },
+		"bad status": { ...good, status: "maybe" },
+		"not an object": null,
+	};
+	for (const [label, block] of Object.entries(broken)) {
+		assert(probabilityProblems(block).length > 0, `broken block accepted: ${label}`);
+	}
 });
 
 console.log(`\nTarget: ${URL_ENDPOINT}\n`);
@@ -558,15 +651,51 @@ await test("search_phishings rejects queries shorter than 3 chars", async () => 
 console.log("\n## Tool: analyze_url");
 
 await test("analyze_url with a syntactically valid URL returns live_analysis JSON", async () => {
-	const r = await rpc("tools/call", {
-		name: "analyze_url",
-		arguments: { url: "https://example-test-domain-phishunt.com" },
-	});
-	assert(r.body.result?.content, `no content: ${JSON.stringify(r.body)}`);
-	const text = r.body.result.content[0].text;
-	const data = JSON.parse(text);
-	assert(data && typeof data === "object" && "live_analysis" in data, `expected 'live_analysis' key: ${text.slice(0, 200)}`);
+	const data = await getAnalyzeSample();
+	assert(data && typeof data === "object" && "live_analysis" in data, `expected 'live_analysis' key: ${JSON.stringify(data).slice(0, 200)}`);
 });
+
+await test("analyze_url output includes verdict, verdict_confidence and verdict_basis", async () => {
+	const data = await getAnalyzeSample();
+	const VERDICTS = ["phishing", "likely_phishing", "suspicious", "no_evidence", "not_assessed"];
+	assert(VERDICTS.includes(data.verdict), `verdict must be one of ${VERDICTS.join("|")}, got ${JSON.stringify(data.verdict)}`);
+	assert(data.verdict_confidence !== undefined && data.verdict_confidence !== null, "verdict_confidence is missing");
+	assert("verdict_basis" in data, "verdict_basis is missing");
+});
+
+// The probability block ships with the backend release that follows this MCP
+// change. This suite hits prod, so until that deploy lands the assertion is
+// skipped (loudly) rather than failed; after it, the block must match the
+// documented contract in every field.
+{
+	const name = "analyze_url output includes a probability block matching the documented contract";
+	const data = await getAnalyzeSample().catch(() => null);
+	if (!data) {
+		skip(name, "no analyze_url sample (the test above failed)");
+	} else if (!("probability" in data)) {
+		skip(name, "no `probability` field in the analyze_url response: backend not deployed yet (re-run after the phishunt-backend deploy)");
+	} else {
+		await test(name, async () => {
+			const problems = probabilityProblems(data.probability, { coverage: PASSIVE_COVERAGE });
+			assert(problems.length === 0, problems.join("; "));
+			// verdict and probability sit side by side: adding one must not drop the other.
+			assert(typeof data.verdict === "string", "verdict must still be present beside probability");
+		});
+	}
+
+	const hname = "analyze_url history separates apex_prior_detections (medium+) from apex_candidates_seen (all rows) and reports scope";
+	if (data && data.history && !("apex_candidates_seen" in data.history)) {
+		skip(hname, "no `history.apex_candidates_seen`: backend not deployed yet");
+	} else if (data && data.history) {
+		await test(hname, async () => {
+			const h = data.history;
+			assert(Number.isInteger(h.apex_candidates_seen) && h.apex_candidates_seen >= 0, `apex_candidates_seen must be an integer >= 0, got ${JSON.stringify(h.apex_candidates_seen)}`);
+			assert(Number.isInteger(h.apex_prior_detections) && h.apex_prior_detections >= 0, `apex_prior_detections must be an integer >= 0, got ${JSON.stringify(h.apex_prior_detections)}`);
+			assert(h.apex_prior_detections <= h.apex_candidates_seen, `medium+ detections (${h.apex_prior_detections}) cannot exceed all rows seen (${h.apex_candidates_seen})`);
+			assert(h.scope === "apex" || h.scope === "host", `scope must be "apex" or "host", got ${JSON.stringify(h.scope)}`);
+		});
+	}
+}
 
 await test("analyze_url requires 'url' param", async () => {
 	const r = await rpc("tools/call", { name: "analyze_url", arguments: {} });
@@ -600,7 +729,7 @@ if (!IS_PROD) {
 	// without ever calling the backend" path deterministically. Skipped
 	// against prod: whether mcp.phishunt.io has DEEP_TOKEN configured is
 	// unknown from here, and if it does, this call would trigger a REAL deep
-	// analysis against the live backend (5-15s, consumes the shared
+	// analysis against the live backend (10-40s, consumes the shared
 	// 50/day production budget) -- not something a test suite should risk.
 	await test("analyze_url_deep fails clean when DEEP_TOKEN is unset (local dev)", async () => {
 		const r = await rpc("tools/call", {
@@ -921,7 +1050,7 @@ await test("GET with Accept: */* still returns the JSON discovery body, with Var
 });
 
 // ── Summary ─────────────────────────────────────────────────────────────────
-console.log(`\n${passed} passed, ${failed} failed`);
+console.log(`\n${passed} passed, ${failed} failed, ${skipped} skipped`);
 if (failed > 0) {
 	console.log("\nFailures:");
 	for (const f of failures) console.log(`  - ${f.name}: ${f.error}`);
