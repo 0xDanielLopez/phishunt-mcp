@@ -190,7 +190,7 @@ if (!IS_PROD) {
 	// exercises the "fails clean without calling the backend" path
 	// deterministically. Skipped against prod: whether mcp.phishunt.io has
 	// DEEP_TOKEN configured is unknown from here, and if it does, this would
-	// trigger a REAL deep analysis (15-60s, consumes the shared 50/day budget).
+	// trigger a REAL deep analysis (15-45s, consumes the shared 50/day budget).
 	await test("client.callTool('analyze_url_deep') fails clean when DEEP_TOKEN is unset (local dev)", async () => {
 		let errored = false;
 		try {

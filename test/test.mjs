@@ -167,13 +167,13 @@ await test("analyze_url / analyze_url_deep descriptions document probability, re
 		assert(passive.includes(needle), `analyze_url description lost ${JSON.stringify(needle)}`);
 	}
 	const deep = descOf("analyze_url_deep");
-	for (const needle of ["RENDERS", "active_rendered", "active_no_render", "render.status", "15-60 seconds", "~70 seconds", "50 analyses/day", "single-flight", "Privacy:", "attacker-authored", "'not fully evaluated'"]) {
+	for (const needle of ["RENDERS", "active_rendered", "active_no_render", "render.status", "15-45 seconds", "~50 seconds", "50 analyses/day", "single-flight", "Privacy:", "attacker-authored", "'not fully evaluated'"]) {
 		assert(deep.includes(needle), `analyze_url_deep description lost ${JSON.stringify(needle)}`);
 	}
 	assert(!/never renders|always come back unevaluated/i.test(deep), "analyze_url_deep description still says it never renders");
 	const t = srcText.match(/const DEEP_UPSTREAM_TIMEOUT_MS = ([\d_]+);/);
 	assert(t, "could not locate DEEP_UPSTREAM_TIMEOUT_MS in src/index.ts");
-	assert(Number(t[1].replaceAll("_", "")) === 80000, `DEEP_UPSTREAM_TIMEOUT_MS must be 80000 (backend 70 s, nginx 80 s, CF 100 s), got ${t[1]}`);
+	assert(Number(t[1].replaceAll("_", "")) === 80000, `DEEP_UPSTREAM_TIMEOUT_MS must be 80000 (backend 50 s, nginx 80 s, CF 100 s), got ${t[1]}`);
 });
 
 // Unit tests of the contract checker itself, so a bug in it cannot silently
@@ -834,7 +834,7 @@ if (!IS_PROD) {
 	// without ever calling the backend" path deterministically. Skipped
 	// against prod: whether mcp.phishunt.io has DEEP_TOKEN configured is
 	// unknown from here, and if it does, this call would trigger a REAL deep
-	// analysis against the live backend (15-60s, consumes the shared
+	// analysis against the live backend (15-45s, consumes the shared
 	// 50/day production budget) -- not something a test suite should risk.
 	await test("analyze_url_deep fails clean when DEEP_TOKEN is unset (local dev)", async () => {
 		const r = await rpc("tools/call", {
