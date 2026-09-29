@@ -2,6 +2,9 @@
 // phishunt-mcp integration tests.
 // Usage: MCP_URL=https://mcp.phishunt.io node test/test.mjs
 //        (or MCP_URL=http://localhost:8787 for local dev)
+//        REQUIRE_PROBABILITY=1 (post-deploy run): the "field absent" skips for
+//        `probability` and `history.apex_candidates_seen`, and a probability
+//        block with status "unavailable", become failures instead of SKIPPED.
 
 import { ACTIVE_COVERAGE, PASSIVE_COVERAGE, probabilityProblems } from "./probability-contract.mjs";
 
@@ -75,6 +78,20 @@ async function test(name, fn) {
 function skip(name, reason) {
 	console.log(`  - ${name}\n      SKIPPED: ${reason}`);
 	skipped++;
+}
+
+// REQUIRE_PROBABILITY=1 is the post-deploy switch: once the backend release is
+// live, a missing (or unavailable) probability / history field is a defect, not
+// "not deployed yet". Without it the same condition is SKIPPED.
+const REQUIRE_PROBABILITY = process.env.REQUIRE_PROBABILITY === "1";
+async function skipUnlessRequired(name, reason) {
+	if (REQUIRE_PROBABILITY) {
+		await test(name, async () => {
+			throw new Error(`${reason} (REQUIRE_PROBABILITY=1: expected the backend release to be live)`);
+		});
+	} else {
+		skip(name, reason);
+	}
 }
 
 // One analyze_url call shared by every test that needs a live sample, so the
@@ -199,6 +216,86 @@ await test("probabilityProblems accepts a well-formed block and rejects broken o
 		assert(probabilityProblems(block).length > 0, `broken block accepted: ${label}`);
 	}
 });
+
+// check_domain archive states, exercised against the real worker code with a
+// mocked upstream (no network, no server needed). The worker is bundled with
+// esbuild (a wrangler dependency); without it the test is SKIPPED.
+await (async () => {
+	const name = "check_domain archive states: only medium+ is PREVIOUSLY DETECTED; low/noise, HTTP 400 and upstream errors are labelled apart (offline)";
+	let worker;
+	try {
+		const { build } = await import("esbuild");
+		const { fileURLToPath } = await import("node:url");
+		const out = await build({
+			entryPoints: [fileURLToPath(new URL("../src/index.ts", import.meta.url))],
+			bundle: true,
+			format: "esm",
+			platform: "neutral",
+			write: false,
+			logLevel: "silent",
+		});
+		const code = out.outputFiles[0].text;
+		worker = (await import("data:text/javascript;base64," + Buffer.from(code).toString("base64"))).default;
+	} catch (e) {
+		skip(name, `could not bundle src/index.ts with esbuild: ${e.message}`);
+		return;
+	}
+	await test(name, async () => {
+		const realFetch = globalThis.fetch;
+		const record = (verdict) => ({ company: "acme", first_seen: "2026-01-02", detail_url: "https://phishunt.io/suspicious/acme/u1/", verdict });
+		const analyzeFor = {
+			"high.example": { status: 200, body: { known: { previously_active: true, record: record("high") } } },
+			"critical.example": { status: 200, body: { known: { previously_active: true, record: record("critical") } } },
+			"medium.example": { status: 200, body: { known: { previously_active: true, record: record("medium") } } },
+			"low.example": { status: 200, body: { known: { previously_active: true, record: record("low") }, action: { queued_for_analysis: true, reason: "brand match" } } },
+			"noise.example": { status: 200, body: { known: { previously_active: true, record: record("noise") } } },
+			"nover.example": { status: 200, body: { known: { previously_active: true, record: { ...record("x"), verdict: undefined } } } },
+			"bad.example": { status: 400, body: { error: "invalid host" } },
+			"down.example": { status: 500, body: { error: "boom" } },
+		};
+		globalThis.fetch = async (input) => {
+			const u = String(input);
+			if (u.endsWith("/feed.json")) return new Response("[]", { status: 200 });
+			const host = new URL(new URL(u).searchParams.get("url")).hostname;
+			const m = analyzeFor[host];
+			if (!m) return new Response("{}", { status: 404 });
+			return new Response(JSON.stringify(m.body), { status: m.status });
+		};
+		const check = async (host) => {
+			const req = new Request("https://mcp.test/", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "check_domain", arguments: { domain: host } } }),
+			});
+			const res = await worker.fetch(req, {});
+			const body = await res.json();
+			assert(body.result, `no result for ${host}: ${JSON.stringify(body)}`);
+			return body.result.content[0].text;
+		};
+		try {
+			for (const h of ["high.example", "critical.example", "medium.example"]) {
+				const t = await check(h);
+				assert(t.includes("PREVIOUSLY DETECTED"), `${h}: expected PREVIOUSLY DETECTED: ${t}`);
+				assert(t.includes("2026-01-02"), `${h}: first_seen missing: ${t}`);
+			}
+			for (const [h, v] of [["low.example", "low"], ["noise.example", "noise"], ["nover.example", "unknown"]]) {
+				const t = await check(h);
+				assert(!t.includes("PREVIOUSLY DETECTED"), `${h}: a ${v} row must not read as a detection: ${t}`);
+				assert(t.includes(`previously seen as a low-signal candidate (verdict ${v}), not a confirmed detection`), `${h}: expected the low-signal line: ${t}`);
+				assert(t.includes("first seen 2026-01-02"), `${h}: first_seen missing: ${t}`);
+			}
+			const low = await check("low.example");
+			assert(low.includes("queued it for phishunt pipeline analysis"), `enqueue receipt lost on the low-signal path: ${low}`);
+			const bad = await check("bad.example");
+			assert(bad.includes("not a valid DNS host, archive not checked"), `HTTP 400 must map to the invalid-host line: ${bad}`);
+			assert(!bad.includes("upstream error"), `HTTP 400 must not read as an upstream error: ${bad}`);
+			const down = await check("down.example");
+			assert(down.includes("archive not checked (upstream error)"), `HTTP 500 must still read as an upstream error: ${down}`);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	});
+})();
 
 console.log(`\nTarget: ${URL_ENDPOINT}\n`);
 
@@ -673,7 +770,11 @@ await test("analyze_url output includes verdict, verdict_confidence and verdict_
 	if (!data) {
 		skip(name, "no analyze_url sample (the test above failed)");
 	} else if (!("probability" in data)) {
-		skip(name, "no `probability` field in the analyze_url response: backend not deployed yet (re-run after the phishunt-backend deploy)");
+		await skipUnlessRequired(name, "no `probability` field in the analyze_url response: backend not deployed yet (re-run after the phishunt-backend deploy)");
+	} else if (data.probability?.status === "unavailable") {
+		// A plain passive URL must get a real estimate once the model is live;
+		// "unavailable" is only tolerated before that (and by the offline unit test).
+		await skipUnlessRequired(name, "`probability.status` is \"unavailable\" for a plain passive URL: the backend is not serving the model yet, so the contract could not be checked");
 	} else {
 		await test(name, async () => {
 			const problems = probabilityProblems(data.probability, { coverage: PASSIVE_COVERAGE });
@@ -684,10 +785,12 @@ await test("analyze_url output includes verdict, verdict_confidence and verdict_
 	}
 
 	const hname = "analyze_url history separates apex_prior_detections (medium+) from apex_candidates_seen (all rows) and reports scope";
-	if (!data || !data.history) {
-		skip(hname, "no analyze_url sample or no `history` object in it");
+	if (!data) {
+		skip(hname, "no analyze_url sample (the test above failed)");
+	} else if (!data.history) {
+		await skipUnlessRequired(hname, "no `history` object in the analyze_url response");
 	} else if (!("apex_candidates_seen" in data.history)) {
-		skip(hname, "no `history.apex_candidates_seen`: backend not deployed yet");
+		await skipUnlessRequired(hname, "no `history.apex_candidates_seen`: backend not deployed yet");
 	} else {
 		await test(hname, async () => {
 			const h = data.history;

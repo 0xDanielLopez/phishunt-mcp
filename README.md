@@ -14,7 +14,7 @@ suspicious domains, list phishings by targeted brand, and sync detection deltas.
 
 | Name | Purpose |
 |---|---|
-| `check_domain` | Is this host (or a list of up to 20) in the active phishunt feed? Exact match; misses are checked against the archive. |
+| `check_domain` | Is this host (or a list of up to 20) in the active phishunt feed? Exact match; misses are checked against the archive. `PREVIOUSLY DETECTED` is printed only when the archived row's verdict is medium, high or critical; a low/noise archive row is reported as a low-signal candidate, and a host that is not valid DNS is reported as such instead of an upstream error. |
 | `list_brand_phishings` | List active phishings targeting a brand (e.g. `microsoft`). |
 | `get_recent_detections` | Delta sync: detections since an ISO date. |
 | `get_brand_metadata` | Curated brand metadata (display name, category, AI characterisation, active count). |
@@ -71,4 +71,8 @@ MCP_URL=http://localhost:8787 npm test
 ```bash
 npm run deploy       # wrangler deploy
 MCP_URL=https://mcp.phishunt.io npm test
+# after the phishunt-backend release that adds `probability` and `history.apex_candidates_seen`:
+REQUIRE_PROBABILITY=1 MCP_URL=https://mcp.phishunt.io npm test
 ```
+
+Without `REQUIRE_PROBABILITY=1` the live `probability` / `history` assertions are reported as SKIPPED while the backend field is absent or `probability.status` is `unavailable`; with it they fail.
