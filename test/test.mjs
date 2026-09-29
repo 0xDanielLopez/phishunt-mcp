@@ -167,7 +167,7 @@ await test("analyze_url / analyze_url_deep descriptions document probability, re
 		assert(passive.includes(needle), `analyze_url description lost ${JSON.stringify(needle)}`);
 	}
 	const deep = descOf("analyze_url_deep");
-	for (const needle of ["RENDERS", "active_rendered", "active_no_render", "render.status", "10-40 seconds", "~70 seconds", "50 analyses/day", "single-flight", "Privacy:", "attacker-authored", "'not fully evaluated'"]) {
+	for (const needle of ["RENDERS", "active_rendered", "active_no_render", "render.status", "15-60 seconds", "~70 seconds", "50 analyses/day", "single-flight", "Privacy:", "attacker-authored", "'not fully evaluated'"]) {
 		assert(deep.includes(needle), `analyze_url_deep description lost ${JSON.stringify(needle)}`);
 	}
 	assert(!/never renders|always come back unevaluated/i.test(deep), "analyze_url_deep description still says it never renders");
@@ -834,7 +834,7 @@ if (!IS_PROD) {
 	// without ever calling the backend" path deterministically. Skipped
 	// against prod: whether mcp.phishunt.io has DEEP_TOKEN configured is
 	// unknown from here, and if it does, this call would trigger a REAL deep
-	// analysis against the live backend (10-40s, consumes the shared
+	// analysis against the live backend (15-60s, consumes the shared
 	// 50/day production budget) -- not something a test suite should risk.
 	await test("analyze_url_deep fails clean when DEEP_TOKEN is unset (local dev)", async () => {
 		const r = await rpc("tools/call", {
