@@ -163,17 +163,37 @@ await test("analyze_url / analyze_url_deep descriptions document probability, re
 		return JSON.parse(`"${m[1]}"`);
 	};
 	const passive = descOf("analyze_url");
-	for (const needle of ["`verdict`", "`probability`", "relative_risk", "interval_80", "BY DESIGN", "NOT 'safe'", "analyze_url_deep", "Privacy:", "attacker-authored"]) {
+	for (const needle of ["`verdict`", "`probability`", "relative_risk", "interval_80", "BY DESIGN", "NOT 'safe'", "analyze_url_deep", "Privacy:", "attacker-authored", "service_range"]) {
 		assert(passive.includes(needle), `analyze_url description lost ${JSON.stringify(needle)}`);
 	}
 	const deep = descOf("analyze_url_deep");
-	for (const needle of ["RENDERS", "active_rendered", "active_no_render", "render.status", "15-45 seconds", "~50 seconds", "50 analyses/day", "single-flight", "Privacy:", "attacker-authored", "'not fully evaluated'"]) {
+	for (const needle of ["RENDERS", "active_rendered", "active_no_render", "render.status", "15-45 seconds", "~50 seconds", "50 analyses/day", "single-flight", "Privacy:", "attacker-authored", "'not fully evaluated'", "service_range"]) {
 		assert(deep.includes(needle), `analyze_url_deep description lost ${JSON.stringify(needle)}`);
 	}
 	assert(!/never renders|always come back unevaluated/i.test(deep), "analyze_url_deep description still says it never renders");
 	const t = srcText.match(/const DEEP_UPSTREAM_TIMEOUT_MS = ([\d_]+);/);
 	assert(t, "could not locate DEEP_UPSTREAM_TIMEOUT_MS in src/index.ts");
 	assert(Number(t[1].replaceAll("_", "")) === 80000, `DEEP_UPSTREAM_TIMEOUT_MS must be 80000 (backend 50 s, nginx 80 s, CF 100 s), got ${t[1]}`);
+});
+
+// Source-level check: the tools that pass api rows through must say that
+// service_range is a network annotation and not a verdict. Offline, same
+// pattern as the analyze description test above.
+await test("row tools document service_range as a network annotation, not a verdict (offline)", async () => {
+	const { readFileSync } = await import("node:fs");
+	const { fileURLToPath } = await import("node:url");
+	const srcText = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
+	const descOf = (tool) => {
+		const m = srcText.match(new RegExp(`name: "${tool}",\\s*description:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+		assert(m, `could not locate the ${tool} description in src/index.ts`);
+		return JSON.parse(`"${m[1]}"`);
+	};
+	for (const tool of ["list_brand_phishings", "get_recent_detections", "search_phishings", "get_related_infrastructure", "analyze_url", "analyze_url_deep"]) {
+		const d = descOf(tool);
+		for (const needle of ["service_range", "not a verdict", "provider IP range"]) {
+			assert(d.includes(needle), `${tool} description lost ${JSON.stringify(needle)}`);
+		}
+	}
 });
 
 // Unit tests of the contract checker itself, so a bug in it cannot silently
