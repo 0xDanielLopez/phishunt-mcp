@@ -874,7 +874,7 @@ async function toolAnalyzeUrlDeep(args: Record<string, unknown>, env: Env) {
 	}
 
 	const exampleHost = deepExampleHost(url);
-	const cacheKey = exampleHost ? new Request(`https://mcp.phishunt.io/__deep_example_cache/${exampleHost}`) : null;
+	const cacheKey = exampleHost ? new Request(`https://mcp.phishunt.io/__deep_example_cache/v2/${exampleHost}`) : null;
 	if (cacheKey) {
 		const hit = await caches.default.match(cacheKey);
 		if (hit) {
@@ -925,7 +925,7 @@ async function toolAnalyzeUrlDeep(args: Record<string, unknown>, env: Env) {
 	}
 	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
 	const data = await r.json();
-	if (cacheKey) {
+	if (cacheKey && exampleHost && deepExampleEcho(data, exampleHost)) {
 		await caches.default.put(
 			cacheKey,
 			new Response(JSON.stringify(data), {
@@ -945,10 +945,22 @@ async function toolAnalyzeUrlDeep(args: Record<string, unknown>, env: Env) {
 const DEEP_EXAMPLE_HOSTS = new Set(["example.com", "example.org", "example.net"]);
 const DEEP_EXAMPLE_TTL_S = 86400;
 
+// Only the bare form is cached ("example.com", "www.example.com",
+// "https://example.com/"): no userinfo, backslash, port, path, query or
+// fragment. A looser parser would let "https://evil.com\@example.com" (which
+// the backend resolves to evil.com) poison the shared entry, and a cached
+// "example.com/?token=..." would leak one caller's URL to every other caller.
 function deepExampleHost(url: string): string | null {
-	const authority = url.toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").split(/[/?#]/)[0];
-	const host = (authority.split("@").pop() ?? "").split(":")[0].replace(/\.$/, "").replace(/^www\./, "");
-	return DEEP_EXAMPLE_HOSTS.has(host) ? host : null;
+	const m = /^(?:https?:\/\/)?(?:www\.)?(example\.(?:com|org|net))\/?$/.exec(url.trim().toLowerCase());
+	return m && DEEP_EXAMPLE_HOSTS.has(m[1]) ? m[1] : null;
+}
+
+// Second guard for the cache write: the backend must have analysed the same
+// host we keyed on, with no path or query in its own echo of the URL.
+function deepExampleEcho(data: unknown, host: string): boolean {
+	const q = (data as { query?: { host?: unknown; url?: unknown } } | null)?.query;
+	if (!q || typeof q.host !== "string" || typeof q.url !== "string") return false;
+	return q.host.replace(/^www\./, "") === host && /^https?:\/\/(?:www\.)?[^/?#@\\]+\/?$/.test(q.url);
 }
 
 // Implements the get_related_infrastructure tool: resolve a domain/URL to its
