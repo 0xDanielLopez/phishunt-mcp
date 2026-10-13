@@ -873,6 +873,21 @@ async function toolAnalyzeUrlDeep(args: Record<string, unknown>, env: Env) {
 		};
 	}
 
+	const exampleHost = deepExampleHost(url);
+	const cacheKey = exampleHost ? new Request(`https://mcp.phishunt.io/__deep_example_cache/${exampleHost}`) : null;
+	if (cacheKey) {
+		const hit = await caches.default.match(cacheKey);
+		if (hit) {
+			const cached = (await hit.json()) as Record<string, unknown>;
+			const meta = (cached.meta ?? {}) as Record<string, unknown>;
+			cached.meta = {
+				...meta,
+				cached: `reserved example domain: one live deep run every ${DEEP_EXAMPLE_TTL_S / 3600} h, this response is served from cache`,
+			};
+			return textContent(JSON.stringify(cached, null, 2));
+		}
+	}
+
 	const r = await fetch(`${API_BASE}/api/v1/analyze/deep?url=${encodeURIComponent(url)}`, {
 		headers: { "User-Agent": UA, "X-Phishunt-Deep-Token": token },
 		// Deep analysis actively fetches the target (HTTP + cert + RDAP + NS +
@@ -910,7 +925,30 @@ async function toolAnalyzeUrlDeep(args: Record<string, unknown>, env: Env) {
 	}
 	if (!r.ok) throw { code: ERR.INTERNAL, message: `API returned HTTP ${r.status}` };
 	const data = await r.json();
+	if (cacheKey) {
+		await caches.default.put(
+			cacheKey,
+			new Response(JSON.stringify(data), {
+				headers: { "Content-Type": "application/json", "Cache-Control": `max-age=${DEEP_EXAMPLE_TTL_S}` },
+			}),
+		);
+	}
 	return textContent(JSON.stringify(data, null, 2));
+}
+
+// RFC 2606 example domains. An external MCP monitor (AgentStatus, found
+// 2026-10-13 via CF analytics: AWS us-east-1, python-requests) calls
+// analyze_url_deep with example.com every ~6 h. Serving one live run per day
+// from the Worker cache keeps it from spending the 50/day deep budget and
+// cold-starting Chrome on the droplet four times a day. The cache is per CF
+// colo, so a probe from a different region can still trigger a live run.
+const DEEP_EXAMPLE_HOSTS = new Set(["example.com", "example.org", "example.net"]);
+const DEEP_EXAMPLE_TTL_S = 86400;
+
+function deepExampleHost(url: string): string | null {
+	const authority = url.toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").split(/[/?#]/)[0];
+	const host = (authority.split("@").pop() ?? "").split(":")[0].replace(/\.$/, "").replace(/^www\./, "");
+	return DEEP_EXAMPLE_HOSTS.has(host) ? host : null;
 }
 
 // Implements the get_related_infrastructure tool: resolve a domain/URL to its
