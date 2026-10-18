@@ -12,12 +12,14 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260907.1",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "typescript": "^5.6.3",
     "wrangler": "^4.129.1"
   },
   "overrides": {
     "sharp": "0.35.5",
-    "proxy-addr": "2.0.8"
+    "proxy-addr": "2.0.8",
+    "undici": "^7.29.1",
+    "ip-address": "^10.7.1"
   }
 }
