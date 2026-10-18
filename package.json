@@ -15,5 +15,8 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "typescript": "^5.6.3",
     "wrangler": "^4.129.1"
+  },
+  "overrides": {
+    "sharp": "0.35.5"
   }
 }
