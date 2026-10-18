@@ -17,6 +17,7 @@
     "wrangler": "^4.129.1"
   },
   "overrides": {
-    "sharp": "0.35.5"
+    "sharp": "0.35.5",
+    "proxy-addr": "2.0.8"
   }
 }
