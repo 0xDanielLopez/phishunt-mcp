@@ -3,7 +3,7 @@
 **Model Context Protocol (MCP) server for [phishunt.io](https://phishunt.io).**
 
 Exposes the public phishing-domains feed as MCP tools so AI agents can look up
-suspicious domains, list phishings by targeted brand, and sync detection deltas.
+suspicious domains, list phishings by targeted brand, and list live detections by last verification.
 
 - **Endpoint**: `https://mcp.phishunt.io/` (HTTP JSON-RPC 2.0, POST)
 - **Protocol version**: 2025-11-25
@@ -16,7 +16,7 @@ suspicious domains, list phishings by targeted brand, and sync detection deltas.
 |---|---|
 | `check_domain` | Is this host (or a list of up to 20) in the active phishunt feed? Exact match; misses are checked against the archive. `PREVIOUSLY DETECTED` is printed only when the archived row's verdict is medium, high or critical; a low/noise archive row is reported as a low-signal candidate, and a host that is not valid DNS is reported as such instead of an upstream error. |
 | `list_brand_phishings` | List active phishings targeting a brand (e.g. `microsoft`). |
-| `get_recent_detections` | Delta sync: detections since an ISO date. |
+| `get_recent_detections` | Live detections last verified on or after an ISO date (use `first_seen` to find new ones). |
 | `get_brand_metadata` | Curated brand metadata (display name, category, AI characterisation, active count). |
 | `get_cert_metadata` | Factual metadata for an abused TLS intermediate CA (operator, root, key type, siblings). |
 | `search_phishings` | Free-text search across active phishing URLs/domains/IPs (min 3 chars). |
